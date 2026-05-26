@@ -1,0 +1,4 @@
+Starting project at C:\Users\dafoorz\RuneboundDuel
+Starting Metro Bundler
+Waiting on http://localhost:8085
+Logs for your project will appear below.
