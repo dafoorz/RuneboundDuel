@@ -85,11 +85,35 @@ function getEncounterType(combatNum) {
   return 'regular';
 }
 
-const getEnemyStats = (encounterType) => ({
-  regular: { maxHp: 80, damage: 10 },
-  miniBoss: { maxHp: 120, damage: 10 },
-  boss: { maxHp: 200, damage: 10 },
-})[encounterType] || { maxHp: 80, damage: 10 };
+function randInRange(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function getScaledEnemyStats(encounterType, combatNum, level) {
+  // Cross-level multiplier applies to regular enemies only
+  const mult = encounterType === 'regular' ? 1 + (level - 1) * 0.15 : 1;
+  let baseHpMin, baseHpMax, baseAtkMin, baseAtkMax, baseShdMin, baseShdMax;
+  if (encounterType === 'miniBoss') {
+    baseHpMin  = 100 + level * 30;  baseHpMax  = 150 + level * 50;
+    baseAtkMin =  10 + level *  5;  baseAtkMax =  22 + level *  8;
+    baseShdMin =  10 + level *  3;  baseShdMax =  20 + level *  5;
+  } else if (encounterType === 'boss') {
+    baseHpMin  = 180 + level *  60; baseHpMax  = 200 + level * 100;
+    baseAtkMin =  10 + level *   8; baseAtkMax =  20 + level *  12;
+    baseShdMin =  15 + level *   5; baseShdMax =  30 + level *   8;
+  } else {
+    baseHpMin  =  40 + combatNum * 10; baseHpMax  =  60 + combatNum * 10;
+    baseAtkMin =   5 + combatNum *  2; baseAtkMax =  10 + combatNum *  3;
+    baseShdMin =   5 + combatNum;      baseShdMax =   8 + combatNum *  3;
+  }
+  const atkMin = Math.round(baseAtkMin * mult);
+  const atkMax = Math.round(baseAtkMax * mult);
+  const shdMin = Math.round(baseShdMin * mult);
+  const shdMax = Math.round(baseShdMax * mult);
+  const maxHp  = Math.round(randInRange(baseHpMin, baseHpMax) * mult);
+  const damage = randInRange(atkMin, atkMax);
+  return { maxHp, damage, attackRange: [atkMin, atkMax], shieldRange: [shdMin, shdMax] };
+}
 
 // ─── Boss/Mini boss abilities ──────────────────────────────────────────────────
 
@@ -822,6 +846,8 @@ export default function App() {
   const [encounterType,    setEncounterType]    = useState('regular'); // 'regular'|'miniBoss'|'boss'
   const [enemyMaxHP,       setEnemyMaxHP]       = useState(ENEMY_MAX_HP);
   const [enemyDamage,      setEnemyDamage]      = useState(ENEMY_ATTACK);
+  const [enemyAttackRange, setEnemyAttackRange] = useState([ENEMY_ATTACK, ENEMY_ATTACK]);
+  const [enemyShieldRange, setEnemyShieldRange] = useState([8, 12]);
   const [miniBossTurnCounter, setMiniBossTurnCounter] = useState(0);
   const [miniBossAbility,  setMiniBossAbility]  = useState(null);
   const [miniBossSelectedAbilities, setMiniBossSelectedAbilities] = useState([]);
@@ -1762,12 +1788,14 @@ export default function App() {
     }
     setLockedCards(newLockedCards);
 
-    // Determine NEXT intention (shown to player for their upcoming turn)
+    // Determine NEXT intention — pick fresh values from ranges each turn
     const nextIntention = determineIntention(encounterType);
-    const blockVal = getBlockValue(encounterType);
-    const nextVal = nextIntention === 'attack'  ? enemyDamage
-                  : nextIntention === 'defence' ? blockVal
-                  : Math.floor(Math.random() * 2) + 1;
+    const nextAtkVal = randInRange(enemyAttackRange[0], enemyAttackRange[1]);
+    const nextShdVal = randInRange(enemyShieldRange[0], enemyShieldRange[1]);
+    const nextVal    = nextIntention === 'attack'  ? nextAtkVal
+                     : nextIntention === 'defence' ? nextShdVal
+                     : Math.floor(Math.random() * 2) + 1;
+    if (nextIntention === 'attack') setEnemyDamage(nextAtkVal);
     setEnemyIntention(nextIntention);
     setEnemyIntentionValue(nextVal);
 
@@ -1850,12 +1878,14 @@ export default function App() {
       setDeck(refDeck);
       setDiscard(refDiscard);
       setCardsPlayedThisTurn(0);
-      // Determine next intention
+      // Determine next intention — pick fresh values from ranges
       const frozenNextInt = determineIntention(encounterType);
-      const frozenBlock   = getBlockValue(encounterType);
-      const frozenNextVal = frozenNextInt === 'attack'  ? enemyDamage
-                          : frozenNextInt === 'defence' ? frozenBlock
+      const frozenAtkVal  = randInRange(enemyAttackRange[0], enemyAttackRange[1]);
+      const frozenShdVal  = randInRange(enemyShieldRange[0], enemyShieldRange[1]);
+      const frozenNextVal = frozenNextInt === 'attack'  ? frozenAtkVal
+                          : frozenNextInt === 'defence' ? frozenShdVal
                           : Math.floor(Math.random() * 2) + 1;
+      if (frozenNextInt === 'attack') setEnemyDamage(frozenAtkVal);
       setEnemyIntention(frozenNextInt);
       setEnemyIntentionValue(frozenNextVal);
       if (chaosModifier?.id === 'cardLock' && refHand.length > 0) {
@@ -1897,10 +1927,10 @@ export default function App() {
 
     // Use levelCombatCount to determine encounter type within current level
     const currentEncounterType = getEncounterType(levelCombatCount + 1);
-    const stats = getEnemyStats(currentEncounterType);
+    const stats = getScaledEnemyStats(currentEncounterType, levelCombatCount + 1, currentLevel);
 
     // Chaos modifier: Dice Frenzy doubles enemy HP
-    let startingEnemyHP = chaosModifier?.id === 'diceFrenzy' ? stats.maxHp * 2 : stats.maxHp;
+    let startingEnemyHP = (chaosModifier?.id === 'diceFrenzy' && currentEncounterType === 'regular') ? stats.maxHp * 2 : stats.maxHp;
     // Chaos modifier: Iron Skin gives enemy starting shield
     const startingEnemyShield = chaosModifier?.id === 'ironSkin' ? Math.floor(startingEnemyHP * 0.3) : 0;
 
@@ -1918,6 +1948,8 @@ export default function App() {
     setEnemyHP(startingEnemyHP);
     setEnemyMaxHP(startingEnemyHP);
     setEnemyDamage(stats.damage);
+    setEnemyAttackRange(stats.attackRange);
+    setEnemyShieldRange(stats.shieldRange);
     setMiniBossTurnCounter(0);
     setLockedCards([]);
     setStatusEffects({ shield: false, rage: { active: false, turnsLeft: 0 }, curse: { active: false } });
@@ -1954,10 +1986,11 @@ export default function App() {
 
     // Set initial intention shown to player before first dice roll
     const firstIntention = determineIntention(currentEncounterType);
-    const blockVal = getBlockValue(currentEncounterType);
-    const firstVal  = firstIntention === 'attack'  ? stats.damage
-                    : firstIntention === 'defence' ? blockVal
-                    : Math.floor(Math.random() * 2) + 1;
+    const firstAtkVal = stats.damage; // already picked from range
+    const firstShdVal = randInRange(stats.shieldRange[0], stats.shieldRange[1]);
+    const firstVal    = firstIntention === 'attack'  ? firstAtkVal
+                      : firstIntention === 'defence' ? firstShdVal
+                      : Math.floor(Math.random() * 2) + 1;
     setEnemyIntention(firstIntention);
     setEnemyIntentionValue(firstVal);
 
@@ -2296,7 +2329,15 @@ export default function App() {
             <Text style={s.avatar}>👹</Text>
           </View>
           {enemyIntention && chaosModifier?.id !== 'blind' && (
-            <View style={s.intentionBox}>
+            <TouchableOpacity
+              style={s.intentionBox}
+              onPress={() => setSelectedAbilityInfo({
+                icon: enemyIntention === 'attack' ? '⚔️' : enemyIntention === 'defence' ? '🛡️' : '🌀',
+                name: enemyIntention === 'attack' ? 'Attack' : enemyIntention === 'defence' ? 'Defence' : 'Ability',
+                desc: enemyIntention === 'attack' ? 'enemy will attack' : enemyIntention === 'defence' ? 'enemy will shield up' : 'enemy will use an ability',
+              })}
+              activeOpacity={0.75}
+            >
               <Text style={s.intentionIcon}>
                 {enemyIntention === 'attack' ? '⚔️' : enemyIntention === 'defence' ? '🛡️' : '🌀'}
               </Text>
@@ -2305,7 +2346,7 @@ export default function App() {
               }]}>
                 {enemyIntentionValue}
               </Text>
-            </View>
+            </TouchableOpacity>
           )}
           {chaosModifier?.id === 'blind' && (
             <View style={s.intentionBox}>
@@ -2318,7 +2359,18 @@ export default function App() {
 
         {/* Enemy dice roll display */}
         {showingEnemyRoll && (
-          <View style={s.enemyRollSection}>
+          <TouchableOpacity
+            style={s.enemyRollSection}
+            activeOpacity={0.75}
+            disabled={enemyRolling}
+            onPress={() => setSelectedAbilityInfo(
+              enemyDiceSum <= 6
+                ? { icon: '💨', name: 'Miss', desc: "the enemy's attack fails completely" }
+                : enemyDiceSum >= 15
+                ? { icon: '💥', name: 'Critical Hit', desc: 'double damage dealt!' }
+                : { icon: '⚔️', name: 'Normal Hit', desc: 'standard damage applied' }
+            )}
+          >
             <Text style={s.enemyRollLabel}>Enemy Roll</Text>
             <View style={s.enemyDiceRow}>
               {enemyDice.map((val, i) => (
@@ -2338,7 +2390,7 @@ export default function App() {
                 </Text>
               )}
             </View>
-          </View>
+          </TouchableOpacity>
         )}
 
         <View style={s.divider} />
