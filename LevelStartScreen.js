@@ -95,7 +95,7 @@ export default function LevelStartScreen({ level, modifier, onEnter }) {
         <View style={s.level1Box}>
           <Text style={s.level1Icon}>⚔️</Text>
           <Text style={s.level1Desc}>Slay 10 enemies to complete the level.</Text>
-          <Text style={s.level1Tip}>Mini-bosses appear at fights 3 and 6. The boss awaits at fight 10.</Text>
+          <Text style={s.level1Tip}>Mini-boss appears at fight 5. The boss awaits at fight 10.</Text>
         </View>
       )}
 

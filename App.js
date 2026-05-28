@@ -20,6 +20,7 @@ import EquipScreen from './EquipScreen';
 import LevelStartScreen    from './LevelStartScreen';
 import LevelCompleteScreen from './LevelCompleteScreen';
 import BribeScreen, { getBribeChance, getMinBribeAmount } from './BribeScreen';
+import BuffShopScreen, { DropBuffScreen, BUFF_DEFS } from './BuffShopScreen';
 import UpgradeShopScreen from './UpgradeShopScreen';
 import {
   NEW_BASE_CARDS, UPGRADE_CARDS, UPGRADE_CARDS_BY_ID,
@@ -80,13 +81,25 @@ function initialCollection() {
 
 function getEncounterType(combatNum) {
   const numInLayer = ((combatNum - 1) % 10) + 1;
-  if (numInLayer === 3 || numInLayer === 6) return 'miniBoss';
+  if (numInLayer === 5) return 'miniBoss';
   if (numInLayer === 10) return 'boss';
   return 'regular';
 }
 
 function randInRange(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+const MULTI_ENEMY_ICONS = ['👾', '🐺', '🦇', '🧟', '🕷️', '🦂', '🐍', '🐲'];
+
+function distributeAmong(total, n, minVal) {
+  const guarantee = n * minVal;
+  const extra = Math.max(0, total - guarantee);
+  const result = Array(n).fill(minVal);
+  for (let i = 0; i < extra; i++) {
+    result[Math.floor(Math.random() * n)]++;
+  }
+  return result;
 }
 
 function getScaledEnemyStats(encounterType, combatNum, level) {
@@ -309,12 +322,12 @@ function drawN(count, fromDeck) {
   return [drawn, deck];
 }
 
-function refillHand(deck, hand, discard) {
+function refillHand(deck, hand, discard, maxSize = 6) {
   let newDeck = [...deck];
   let newHand = [...hand];
   let newDiscard = [...discard];
 
-  while (newHand.length < 6) {
+  while (newHand.length < maxSize) {
     if (newDeck.length === 0 && newDiscard.length === 0) break;
 
     if (newDeck.length === 0) {
@@ -355,24 +368,16 @@ const CARDS = [
     id:      'shield',
     icon:    '🛡️',
     name:    'Shield Wall',
-    desc:    'Block 15 damage',
-    req:     'Any pair',
+    desc:    'Block die × 2 damage',
+    req:     'Any die',
     rarity:  'common',
-    canPlay: hasPair,
+    canPlay: (dice) => dice.some((d) => !d.used && d.val !== null),
     play(dice) {
-      const vals   = available(dice);
-      const counts = {};
-      vals.forEach((v) => (counts[v] = (counts[v] || 0) + 1));
-      const pairVal = Number(Object.keys(counts).find((k) => counts[k] >= 2));
-      const next    = dice.map((d) => ({ ...d }));
-      let removed   = 0;
-      for (let i = 0; i < next.length && removed < 2; i++) {
-        if (!next[i].used && next[i].val === pairVal) {
-          next[i].used = true;
-          removed++;
-        }
-      }
-      return { dice: next, shield: 15, msg: '🛡️ Shield Wall! Blocking 15 damage next turn' };
+      const next = dice.map((d) => ({ ...d }));
+      const idx  = next.findIndex((d) => !d.used && d.val !== null);
+      const shieldAmt = next[idx].val * 2;
+      next[idx].used = true;
+      return { dice: next, shield: shieldAmt, msg: `🛡️ Shield Wall! Blocking ${shieldAmt} damage next turn` };
     },
   },
   {
@@ -693,7 +698,12 @@ function cardDisplayInfo(c) {
   return { id: c.id, icon: c.icon, name: c.name, desc: c.desc, req: c.req, rarity: c.rarity };
 }
 
-const BASE_CARD_COLLECTION = CARDS.slice(0, 4).map(c => makeCardInstance(cardDisplayInfo(c))); // slash, shield, inferno, gambler
+const BASE_CARD_COLLECTION = [
+  ...['slash', 'slash', 'shield', 'shield', 'gambler'].map(id => {
+    const c = CARDS.find(card => card.id === id);
+    return makeCardInstance(cardDisplayInfo(c));
+  })
+]; // 2x slash, 2x shield wall, 1x gambler
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
@@ -797,6 +807,11 @@ export default function App() {
   const enemyDiceRotation = useRef(new Animated.Value(0)).current;
   const shakeAnim         = useRef(new Animated.Value(0)).current;
   const bribeFlashAnim    = useRef(new Animated.Value(0)).current;
+  const playerHitFlash    = useRef(new Animated.Value(0)).current;
+  const victoryFlashAnim  = useRef(new Animated.Value(0)).current;
+  const projectileY       = useRef(new Animated.Value(0)).current;
+  const projectileOpacity = useRef(new Animated.Value(0)).current;
+  const enemyAnims        = useRef(new Map()); // id → { lunge, glowOpacity, deathOpacity, deathFlash }
   const diceSoundRef      = useRef(null);
   const cardSoundRef      = useRef(null);
   const hitSoundRef       = useRef(null);
@@ -887,6 +902,12 @@ export default function App() {
   const [enemyDotType,   setEnemyDotType]   = useState('poison'); // 'poison'|'burn'
   const [enemyFrozenTurns, setEnemyFrozenTurns] = useState(0);
 
+  // ── Multi-enemy state ─────────────────────────────────────────────────
+  const [enemies,          setEnemies]          = useState([]); // active during regular combat
+  const [selectedEnemyIdx, setSelectedEnemyIdx] = useState(0);
+  const [dyingEnemyIds,    setDyingEnemyIds]    = useState(new Set()); // enemies mid-death animation
+  const [floatingDamages,  setFloatingDamages]  = useState([]); // [{ id, value, y, opacity }]
+
   // ── Bribe system ─────────────────────────────────────────────────────────
   const [showBribeScreen,  setShowBribeScreen]  = useState(false);
   const [bribeUsed,        setBribeUsed]        = useState(false); // one bribe per combat
@@ -896,6 +917,16 @@ export default function App() {
   const [postShopAction,    setPostShopAction]    = useState('nextEncounter'); // 'nextEncounter'|'levelComplete'
   const [shrineLockedToast, setShrineLockedToast] = useState(false);
 
+  // ── Boss Soul & Buff system ───────────────────────────────────────────────
+  const [bossSouls,        setBossSouls]        = useState(0);
+  const [activeBuffs,      setActiveBuffs]      = useState([]);
+  const [showBuffShop,     setShowBuffShop]     = useState(false);
+  const [pendingNewBuff,   setPendingNewBuff]   = useState(null);
+  const [showDropBuff,     setShowDropBuff]     = useState(false);
+  const [titanAttackCount,  setTitanAttackCount]  = useState(0);
+  const [divineGraceUsed,   setDivineGraceUsed]   = useState(false);
+  const [purchasedBuffIds,  setPurchasedBuffIds]  = useState([]);
+
   // ── Level system ─────────────────────────────────────────────────────────
   const [currentLevel,        setCurrentLevel]        = useState(1);
   const [levelCombatCount,    setLevelCombatCount]    = useState(0); // 0-9 within level
@@ -904,6 +935,11 @@ export default function App() {
   const [levelRunesEarned,    setLevelRunesEarned]    = useState(0); // runes this level
   const [totalRunesEarned,    setTotalRunesEarned]    = useState(0); // runes this run
   const [pendingNextModifier, setPendingNextModifier] = useState(null); // for level complete screen
+
+  // ── Buff helpers ─────────────────────────────────────────────────────────
+  const hasBuff = (id) => activeBuffs.some(b => b.id === id);
+  const handSize = () => 6 + (hasBuff('cardDraw') ? 1 : 0) + (hasBuff('mysticHand') ? 1 : 0);
+  const rollsPerTurn = () => MAX_ROLLS + (hasBuff('luckyRolls') ? 1 : 0);
 
   // ── UI effects ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1221,8 +1257,18 @@ export default function App() {
     setEnemyDotDmg(0);
     setEnemyDotTurns(0);
     setEnemyFrozenTurns(0);
+    setEnemies([]);
+    setSelectedEnemyIdx(0);
     setUpgradedCards({});
     setRunRunes(0);
+    setBossSouls(0);
+    setActiveBuffs([]);
+    setShowBuffShop(false);
+    setPendingNewBuff(null);
+    setShowDropBuff(false);
+    setTitanAttackCount(0);
+    setDivineGraceUsed(false);
+    setPurchasedBuffIds([]);
     setHasActiveRun(false);
   };
 
@@ -1266,6 +1312,40 @@ export default function App() {
     setPendingNextModifier(null);
     setLevelRunesEarned(0); // Reset for next level
     setScreen('levelStart');
+  }
+
+  // ── Buff Shop handlers ────────────────────────────────────────────────────
+
+  function handleCloseBuffShop() {
+    setShowBuffShop(false);
+    setPhase('cardReward');
+  }
+
+  function handleBuyBuff(buff) {
+    if (bossSouls < buff.cost) return;
+    if (purchasedBuffIds.includes(buff.id)) return;
+    setBossSouls(prev => prev - buff.cost);
+    setPurchasedBuffIds(prev => [...prev, buff.id]);
+    // Immediate permanent stat effects
+    if (buff.id === 'vitality') {
+      setPlayerMaxHp(prev => { const n = prev + 20; setPlayerHP(hp => Math.min(hp + 20, n)); return n; });
+    } else if (buff.id === 'warCrown') {
+      setPlayerMaxHp(prev => { const n = prev + 20; setPlayerHP(hp => Math.min(hp + 20, n)); return n; });
+    } else if (buff.id === 'soulHarvest') {
+      setPlayerMaxHp(prev => { const n = Math.max(1, prev - 40); setPlayerHP(hp => Math.min(hp, n)); return n; });
+    }
+    if (activeBuffs.length >= 3) {
+      setPendingNewBuff(buff);
+      setShowDropBuff(true);
+    } else {
+      setActiveBuffs(prev => [...prev, buff]);
+    }
+  }
+
+  function handleDropBuff(dropId) {
+    setActiveBuffs(prev => [...prev.filter(b => b.id !== dropId), pendingNewBuff]);
+    setPendingNewBuff(null);
+    setShowDropBuff(false);
   }
 
   // ── Card upgrade handler ──────────────────────────────────────────────────
@@ -1358,6 +1438,59 @@ export default function App() {
     setEquipFromScreen('preCombat');
     setScreen('equip');
   };
+
+  // ── Enemy animation helpers ───────────────────────────────────────────────
+
+  function getEnemyAnims(id) {
+    if (!enemyAnims.current.has(id)) {
+      enemyAnims.current.set(id, {
+        lunge:        new Animated.Value(0),
+        glowOpacity:  new Animated.Value(0),
+        deathOpacity: new Animated.Value(1),
+        deathFlash:   new Animated.Value(0),
+      });
+    }
+    return enemyAnims.current.get(id);
+  }
+
+  function playEnemyDeath(enemyId, onDone) {
+    const a = getEnemyAnims(enemyId);
+    a.deathOpacity.setValue(1);
+    a.deathFlash.setValue(0);
+    Animated.sequence([
+      Animated.timing(a.deathFlash,   { toValue: 1, duration: 100, useNativeDriver: true }),
+      Animated.timing(a.deathFlash,   { toValue: 0, duration: 100, useNativeDriver: true }),
+      Animated.timing(a.deathOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+    ]).start(onDone);
+  }
+
+  function addFloatingDamage(value) {
+    const id  = Date.now() + Math.random();
+    const fdY = new Animated.Value(0);
+    const fdO = new Animated.Value(1);
+    setFloatingDamages(prev => [...prev, { id, value, y: fdY, opacity: fdO }]);
+    Animated.parallel([
+      Animated.timing(fdY, { toValue: -44, duration: 800, useNativeDriver: true }),
+      Animated.sequence([
+        Animated.delay(400),
+        Animated.timing(fdO, { toValue: 0, duration: 300, useNativeDriver: true }),
+      ]),
+    ]).start(() => setFloatingDamages(prev => prev.filter(f => f.id !== id)));
+  }
+
+  // ── Divine Grace: free full reroll once per combat ───────────────────────
+
+  function handleDivineGrace() {
+    if (!hasBuff('divineGrace') || divineGraceUsed) return;
+    setDivineGraceUsed(true);
+    const next = dice.map(d => {
+      if (d.used) return d;
+      if (d.dieId === 'legendary_die' && d.val !== null) return d;
+      return { ...d, val: rollDie(d.dieId) };
+    });
+    setDice(next);
+    setMessage('🌟 Divine Luck! All dice rerolled for free!');
+  }
 
   // ── Roll ──────────────────────────────────────────────────────────────────
 
@@ -1466,6 +1599,23 @@ export default function App() {
       setPlayerHP(newHP);
     }
 
+    // Buff: Star Blessed — legendary dice always 6, epic dice always 5+
+    if (hasBuff('starBlessed')) {
+      const epicIds = ['mirror', 'vampire', 'storm'];
+      next.forEach((d, i) => {
+        if (d.used) return;
+        if (d.dieId === 'legendary_die') next[i] = { ...next[i], val: 6 };
+        else if (epicIds.includes(d.dieId) && (next[i].val ?? 0) < 5) next[i] = { ...next[i], val: 5 };
+      });
+    }
+    // Buff: Chaos Embrace — all dice roll 1, 3 or 6 only
+    if (hasBuff('chaosEmbrace')) {
+      const cFaces = [1, 3, 6];
+      next.forEach((d, i) => {
+        if (!d.used && d.val !== null) next[i] = { ...next[i], val: cFaces[Math.floor(Math.random() * 3)] };
+      });
+    }
+
     // Storm die: show picker with two roll options
     const stormIdx = next.findIndex((d) => d.dieId === 'storm' && !d.used);
     if (stormIdx !== -1) {
@@ -1476,7 +1626,7 @@ export default function App() {
 
     // Weighted die: show picker after roll
     const wIdx = next.findIndex((d) => d.dieId === 'weighted' && !d.used);
-    if (wIdx !== -1 && !stormIdx) {
+    if (wIdx !== -1 && stormIdx === -1) {
       setWeightedPickerDie({ idx: wIdx, type: 'weighted' });
     }
 
@@ -1490,7 +1640,11 @@ export default function App() {
   // ── Play card ─────────────────────────────────────────────────────────────
 
   function playCard(card, cardInstId) {
-    if (!card.canPlay(dice)) {
+    // Precision buff: cards needing specific values accept 1 lower
+    const checkDice = hasBuff('precision')
+      ? dice.map(d => (!d.used && d.val !== null) ? { ...d, val: Math.min(d.val + 1, 6) } : d)
+      : dice;
+    if (!card.canPlay(checkDice)) {
       setMessage(`Can't play — needs: ${card.req}`);
       return;
     }
@@ -1510,28 +1664,125 @@ export default function App() {
     let abilityEffectMsg = '';
 
     if (result.enemyDmg) {
+      // Apply buff damage multipliers
+      let dmgMult = 1;
+      if (hasBuff('sharpness'))    dmgMult *= 1.1;
+      if (hasBuff('critMastery'))  dmgMult *= 1.15;
+      if (hasBuff('warCrown'))     dmgMult *= 1.3;
+      if (hasBuff('deathPact'))    dmgMult *= 1.5;
+      if (hasBuff('bloodFrenzy'))  dmgMult *= 1.4;
+      if (hasBuff('chaosEmbrace')) dmgMult *= 1.35;
+      if (hasBuff('glassCanon'))   dmgMult *= 3;
+      if (hasBuff('berserkerOath')) {
+        dmgMult *= playerHP <= playerMaxHp * 0.3 ? 1.6 : 0.7;
+      }
+      result.enemyDmg = Math.round(result.enemyDmg * dmgMult);
+
+      // Titan Strength: every 3rd attack auto-crits
+      if (hasBuff('titanStrength')) {
+        const newCount = titanAttackCount + 1;
+        setTitanAttackCount(newCount);
+        if (newCount % 3 === 0) {
+          const critMult = hasBuff('critMastery') ? 3 : 2;
+          result.enemyDmg = Math.round(result.enemyDmg * critMult);
+          abilityEffectMsg += ' 🔱 Titan Crit!';
+        }
+      }
+
       let dmgToEnemy = result.enemyDmg;
 
-      // Mirror: reflect 50% of damage dealt back to player (before shield reduction)
-      if (activeAbilities.some(a => a.id === 'mirror')) {
-        const reflectedDmg = Math.floor(result.enemyDmg * 0.5);
-        newPlayerHP = Math.max(0, newPlayerHP - reflectedDmg);
-        abilityEffectMsg += ` 🔄 Mirror! ${reflectedDmg} reflected!`;
-      }
+      if (enemies.length > 0) {
+        // ── Multi-enemy (regular combat) ──────────────────────────────────
+        const isAoe = ['thunder_combo', 'chaos_nova'].includes(card.id) ||
+                      ['thunder_combo', 'chaos_nova'].includes(getBaseCardId(card.id));
+        const newEnemiesArr = enemies.map(e => ({ ...e }));
 
-      // Shield absorbs damage before HP
-      if (newEnemyShield > 0) {
-        const absorbed = Math.min(newEnemyShield, dmgToEnemy);
-        dmgToEnemy -= absorbed;
-        newEnemyShield -= absorbed;
-      }
-      newEnemyHP = Math.max(0, enemyHP - dmgToEnemy);
+        if (isAoe) {
+          // AoE: hit all living enemies
+          newEnemiesArr.forEach((e, i) => {
+            if (e.hp <= 0) return;
+            const abs = Math.min(e.shield, dmgToEnemy);
+            newEnemiesArr[i] = { ...e, hp: Math.max(0, e.hp - (dmgToEnemy - abs)), shield: Math.max(0, e.shield - abs) };
+          });
+        } else {
+          // Single target: hit selected enemy (resolve stale index if needed)
+          let ti = selectedEnemyIdx;
+          if (!newEnemiesArr[ti] || newEnemiesArr[ti].hp <= 0) {
+            ti = newEnemiesArr.findIndex(e => e.hp > 0);
+          }
+          if (ti >= 0) {
+            const abs = Math.min(newEnemiesArr[ti].shield, dmgToEnemy);
+            const actualDmg = dmgToEnemy - abs;
+            newEnemiesArr[ti] = { ...newEnemiesArr[ti], hp: Math.max(0, newEnemiesArr[ti].hp - actualDmg), shield: Math.max(0, newEnemiesArr[ti].shield - abs) };
+            dmgToEnemy = actualDmg; // for lifebond calc
+            // Individual death animation (if not all dead — all-dead handled below)
+            const justDied = newEnemiesArr[ti].hp <= 0 && enemies[ti]?.hp > 0;
+            if (justDied) {
+              const dId = newEnemiesArr[ti].id;
+              setDyingEnemyIds(prev => new Set([...prev, dId]));
+              playEnemyDeath(dId, () => {
+                setDyingEnemyIds(prev => { const n = new Set(prev); n.delete(dId); return n; });
+              });
+            }
+          }
+        }
 
-      // Chaos: Vampire Rules — enemy heals 50% of damage dealt (only if not dead)
-      if (chaosModifier?.id === 'vampireRules' && newEnemyHP > 0) {
-        const vampHeal = Math.floor(result.enemyDmg * 0.5);
-        newEnemyHP = Math.min(enemyMaxHP, newEnemyHP + vampHeal);
-        abilityEffectMsg += ` 🩸 +${vampHeal}!`;
+        setEnemies(newEnemiesArr);
+        const allDead = newEnemiesArr.every(e => e.hp <= 0);
+        newEnemyHP = allDead ? 0 : 1; // triggers kill detection when all die
+
+        // AoE individual death animations (non-allDead case handled here; allDead handled in kill block below)
+        if (isAoe && !allDead) {
+          newEnemiesArr.forEach((e, i) => {
+            if (e.hp <= 0 && enemies[i]?.hp > 0) {
+              const dId = e.id;
+              setDyingEnemyIds(prev => new Set([...prev, dId]));
+              playEnemyDeath(dId, () => {
+                setDyingEnemyIds(prev => { const n = new Set(prev); n.delete(dId); return n; });
+              });
+            }
+          });
+        }
+
+        if (!allDead && newEnemiesArr[selectedEnemyIdx]?.hp <= 0) {
+          const nxt = newEnemiesArr.findIndex(e => e.hp > 0);
+          if (nxt >= 0) setSelectedEnemyIdx(nxt);
+        }
+
+        // Lifebond (single-target only in multi-enemy mode)
+        if (!isAoe && hasBuff('lifebond') && dmgToEnemy > 0 && !hasBuff('deathPact')) {
+          const lbHeal = Math.max(1, Math.round(dmgToEnemy * 0.1));
+          newPlayerHP = Math.min(playerMaxHp, newPlayerHP + lbHeal);
+        }
+      } else {
+        // ── Single enemy (boss / miniBoss) ────────────────────────────────
+        // Mirror: reflect 50% of damage dealt back to player (before shield reduction)
+        if (activeAbilities.some(a => a.id === 'mirror')) {
+          const reflectedDmg = Math.floor(result.enemyDmg * 0.5);
+          newPlayerHP = Math.max(0, newPlayerHP - reflectedDmg);
+          abilityEffectMsg += ` 🔄 Mirror! ${reflectedDmg} reflected!`;
+        }
+
+        // Shield absorbs damage before HP
+        if (newEnemyShield > 0) {
+          const absorbed = Math.min(newEnemyShield, dmgToEnemy);
+          dmgToEnemy -= absorbed;
+          newEnemyShield -= absorbed;
+        }
+        newEnemyHP = Math.max(0, enemyHP - dmgToEnemy);
+
+        // Chaos: Vampire Rules — enemy heals 50% of damage dealt (only if not dead)
+        if (chaosModifier?.id === 'vampireRules' && newEnemyHP > 0) {
+          const vampHeal = Math.floor(result.enemyDmg * 0.5);
+          newEnemyHP = Math.min(enemyMaxHP, newEnemyHP + vampHeal);
+          abilityEffectMsg += ` 🩸 +${vampHeal}!`;
+        }
+
+        // Lifebond: heal 10% of damage dealt
+        if (hasBuff('lifebond') && dmgToEnemy > 0 && !hasBuff('deathPact')) {
+          const lbHeal = Math.max(1, Math.round(dmgToEnemy * 0.1));
+          newPlayerHP = Math.min(playerMaxHp, newPlayerHP + lbHeal);
+        }
       }
 
       // Track for Death Mark (use ref for synchronous access in triggerEnemyTurn)
@@ -1544,7 +1795,7 @@ export default function App() {
       }
     }
     if (result.playerDmg)  newPlayerHP = Math.max(0, playerHP - result.playerDmg);
-    if (result.playerHeal) newPlayerHP = Math.min(playerMaxHp, newPlayerHP + result.playerHeal);
+    if (result.playerHeal && !hasBuff('deathPact')) newPlayerHP = Math.min(playerMaxHp, newPlayerHP + result.playerHeal);
 
     const newHand = hand.filter((id) => id !== cardInstId);
     const newDiscard = [...discard, cardInstId];
@@ -1597,10 +1848,46 @@ export default function App() {
         setBribeRefundAmount(0);
         setMessage(`💰 Bribe refunded! +${bribeRefundAmount} runes returned.`);
       }
+      // Soul Harvest: heal 20 HP on any kill
+      if (hasBuff('soulHarvest') && !hasBuff('deathPact')) {
+        newPlayerHP = Math.min(playerMaxHp, newPlayerHP + 20);
+      }
+      // Chain Reaction: overflow damage from killing blow → bonus runes (single-enemy only)
+      if (hasBuff('chainReaction') && result.enemyDmg && enemies.length === 0) {
+        const overflow = Math.abs(Math.min(0, enemyHP - result.enemyDmg));
+        if (overflow > 0) {
+          const bonusRunes = Math.floor(overflow * 0.2);
+          if (bonusRunes > 0) {
+            setRunRunes(prev => prev + bonusRunes);
+            abilityEffectMsg += ` ⚡ +${bonusRunes} chain runes!`;
+          }
+        }
+      }
       setLevelCombatCount(prev => prev + 1);
       setCombatCount(prev => prev + 1);
       if (encounterType === 'boss' && currentLevel === 10) {
         setScreen('runComplete');
+      } else if (encounterType === 'boss') {
+        // Award Boss Souls and open buff shop
+        const soulsEarned = 1 + (hasBuff('soulFinder') ? 1 : 0);
+        setBossSouls(prev => prev + soulsEarned);
+        setShowBuffShop(true);
+      } else if (enemies.length > 0) {
+        // Multi-enemy: play death animations for all newly-dead enemies, then reward
+        // `enemies` here still reflects old state in this closure — use it to find who was alive
+        const newlyDead = enemies.filter(e => e.hp > 0);
+        const dyingSet = new Set(newlyDead.map(e => e.id));
+        setDyingEnemyIds(dyingSet);
+        newlyDead.forEach(e => {
+          playEnemyDeath(e.id, () => {}); // callback is no-op; cleanup via setTimeout below
+        });
+        setTimeout(() => {
+          // Victory flash
+          victoryFlashAnim.setValue(0.45);
+          Animated.timing(victoryFlashAnim, { toValue: 0, duration: 700, useNativeDriver: true }).start();
+          setDyingEnemyIds(new Set());
+          setPhase('cardReward');
+        }, 550);
       } else {
         setPhase('cardReward');
       }
@@ -1609,6 +1896,217 @@ export default function App() {
     if (newPlayerHP <= 0) { setPhase('lose'); return; }
 
     // Turn only ends manually via the End Turn button
+  }
+
+  // ── Multi-enemy turn (regular combat) ────────────────────────────────────
+
+  function triggerMultiEnemyTurn(currentPlayerHP = playerHP, currentShield = shield, currentHand = hand, currentDiscard = discard) {
+    const livingEnemies = enemies
+      .map((e, arrIdx) => ({ ...e, arrIdx }))
+      .filter(e => e.hp > 0);
+
+    if (livingEnemies.length === 0) return;
+
+    setEnemyRolling(true);
+    damageDealtThisTurnRef.current = 0;
+
+    // ── DoT tick: applied to selected enemy before attacks ──
+    let startHP = currentPlayerHP;
+    let startShield = currentShield;
+    let livArr = [...enemies]; // mutable copy for DoT/freeze
+
+    if (enemyDotTurns > 0) {
+      const ti = selectedEnemyIdx;
+      if (livArr[ti] && livArr[ti].hp > 0) {
+        const newTargetHP = Math.max(0, livArr[ti].hp - enemyDotDmg);
+        livArr = livArr.map((e, i) => i === ti ? { ...e, hp: newTargetHP } : e);
+        setEnemyDotTurns(prev => Math.max(0, prev - 1));
+        if (livArr.every(e => e.hp <= 0)) {
+          setEnemies(livArr);
+          setEnemyRolling(false);
+          const earnedRunes = chaosModifier?.id === 'goldCurse' ? 0 : 10;
+          if (earnedRunes > 0) {
+            setRunRunes(pr => pr + earnedRunes);
+            setLevelRunesEarned(pr => pr + earnedRunes);
+            setTotalRunesEarned(pr => pr + earnedRunes);
+          }
+          setLevelCombatCount(pr => pr + 1);
+          setCombatCount(pr => pr + 1);
+          setPhase('cardReward');
+          return;
+        }
+        setEnemies(livArr);
+      } else {
+        setEnemyDotTurns(prev => Math.max(0, prev - 1));
+      }
+    }
+
+    // ── Freeze: all enemies skip their turn ──
+    if (enemyFrozenTurns > 0) {
+      setEnemyFrozenTurns(prev => Math.max(0, prev - 1));
+      setEnemyRolling(false);
+      const { hand: refHand, deck: newDeck, discard: newDiscard } = refillHand(deck, currentHand, currentDiscard, handSize());
+      const fDrawn = refHand.filter(id => !currentHand.includes(id));
+      triggerCardDraw(fDrawn);
+      setDice(makeFreshDice(equippedDice));
+      setRollsLeft(rollsPerTurn());
+      setHand(refHand);
+      setDeck(newDeck);
+      setDiscard(newDiscard);
+      setCardsPlayedThisTurn(0);
+      setLockedCards([]);
+      setMessage('❄️ Enemies are frozen! They skip their turn.');
+      setEnemies(prev => prev.map(e => e.hp > 0 ? { ...e, intention: determineIntention('regular') } : e));
+      return;
+    }
+
+    // Reset all enemy shields at start of their turn (same as single-enemy flow)
+    livArr = livArr.map(e => ({ ...e, shield: 0 }));
+    setEnemies(livArr);
+
+    // Re-derive living enemies after DoT (in case one died)
+    const attackerList = livArr
+      .map((e, arrIdx) => ({ ...e, arrIdx }))
+      .filter(e => e.hp > 0);
+
+    const attackEnemy = (listIdx, hp, shld) => {
+      if (hp <= 0) {
+        setPhase('lose');
+        setEnemyRolling(false);
+        return;
+      }
+      if (listIdx >= attackerList.length) {
+        // All enemies done attacking — apply passive buffs
+        let finalHP = hp;
+        if (hasBuff('bloodFrenzy') && finalHP > 0) finalHP = Math.max(0, finalHP - 8);
+        if (hasBuff('regeneration') && finalHP > 0 && !hasBuff('deathPact')) finalHP = Math.min(playerMaxHp, finalHP + 3);
+        setPlayerHP(finalHP);
+        setShield(0);
+        setEnemyRolling(false);
+        if (finalHP <= 0) { setPhase('lose'); return; }
+
+        // Refill hand + reset dice
+        const { hand: refHand, deck: newDeck, discard: newDiscard } = refillHand(deck, currentHand, currentDiscard, handSize());
+        const drawnIds = refHand.filter(id => !currentHand.includes(id));
+        triggerCardDraw(drawnIds);
+        setDice(makeFreshDice(equippedDice));
+        setRollsLeft(rollsPerTurn());
+        setHand(refHand);
+        setDeck(newDeck);
+        setDiscard(newDiscard);
+        setCardsPlayedThisTurn(0);
+
+        if (chaosModifier?.id === 'cardLock' && refHand.length > 0) {
+          setLockedCards([refHand[Math.floor(Math.random() * refHand.length)]]);
+        } else {
+          setLockedCards([]);
+        }
+
+        // Update enrage
+        if (enragedTurns > 0) setEnragedTurns(prev => Math.max(0, prev - 1));
+
+        // Set new intentions for living enemies
+        setEnemies(prev => prev.map(e => e.hp > 0 ? { ...e, intention: determineIntention('regular') } : e));
+        setMessage('Your turn — roll!');
+        return;
+      }
+
+      const enemy = attackerList[listIdx];
+      const diceVals = rollEnemyDice();
+      const sum = diceVals.reduce((a, b) => a + b, 0);
+
+      const intention = enemy.intention || 'attack';
+      setEnemyDice(diceVals);
+      setEnemyDiceSum(sum);
+      setShowingEnemyRoll(true);
+      setEnemyRollStatus(getEnemyRollStatus(sum, intention));
+
+      setTimeout(() => {
+        const rollStatus = getEnemyRollStatus(sum, intention);
+        const numAlive = attackerList.length;
+        const enm = numAlive > 1 ? `${enemy.icon} Enemy ${listIdx + 1}/${numAlive}` : `${enemy.icon} Enemy`;
+
+        if (intention === 'defence') {
+          // Enemy shields up instead of attacking — no lunge for defence
+          let shieldGained = 0;
+          if (rollStatus.status === 'Defence') {
+            shieldGained = enemy.damage;
+          } else if (rollStatus.status === 'StrongDefence') {
+            shieldGained = enemy.damage * 2;
+          }
+          if (shieldGained > 0) {
+            setEnemies(prev => prev.map(e => e.id === enemy.id ? { ...e, shield: e.shield + shieldGained } : e));
+          }
+          setMessage(`${enm} rolls ${sum} (${rollStatus.label})${shieldGained > 0 ? ` — gains ${shieldGained} shield!` : '!'}`);
+          setTimeout(() => { attackEnemy(listIdx + 1, hp, shld); }, 350);
+          return;
+        }
+
+        // Compute damage
+        let dmg = enemy.damage;
+        if (rollStatus.status === 'Miss') {
+          dmg = 0;
+        } else if (rollStatus.status === 'Crit') {
+          dmg *= 2;
+          if (hasBuff('glassCanon') && dmg > 0) {
+            setPlayerHP(0); setEnemyRolling(false); setPhase('lose'); return;
+          }
+        }
+        if (chaosModifier?.id === 'speedRound' && dmg > 0) dmg *= 2;
+        if (enragedTurns > 0 && dmg > 0) dmg *= 2;
+        dmg = Math.max(0, dmg - shld);
+        if (hasBuff('ironSkin') && dmg > 0) dmg = Math.max(0, Math.round(dmg * 0.9));
+        const newHP = Math.max(0, hp - dmg);
+
+        // ── 1. Lunge animation ──────────────────────────────────────────────
+        const ea = getEnemyAnims(enemy.id);
+        ea.lunge.setValue(0);
+        ea.glowOpacity.setValue(0);
+
+        Animated.parallel([
+          Animated.sequence([
+            Animated.timing(ea.lunge,       { toValue: 32, duration: 200, useNativeDriver: true }),
+            Animated.timing(ea.lunge,       { toValue: 0,  duration: 150, useNativeDriver: true }),
+          ]),
+          Animated.sequence([
+            Animated.timing(ea.glowOpacity, { toValue: dmg > 0 ? 0.55 : 0, duration: 160, useNativeDriver: true }),
+            Animated.timing(ea.glowOpacity, { toValue: 0, duration: 190, useNativeDriver: true }),
+          ]),
+        ]).start(() => {
+          // ── 2. Projectile ───────────────────────────────────────────────
+          const isMiss = rollStatus.status === 'Miss';
+          projectileY.setValue(0);
+          projectileOpacity.setValue(1);
+
+          const afterProjectile = () => {
+            // ── 3. Apply damage + player hit effects ────────────────────
+            setPlayerHP(newHP);
+            setMessage(`${enm} rolls ${sum} (${rollStatus.label})${dmg > 0 ? ` — ${dmg} dmg!` : '!'}`);
+            if (dmg > 0) {
+              playerHitFlash.setValue(0.75);
+              Animated.timing(playerHitFlash, { toValue: 0, duration: 500, useNativeDriver: true }).start();
+              addFloatingDamage(dmg);
+              triggerShake();
+            }
+            setTimeout(() => { attackEnemy(listIdx + 1, newHP, 0); }, 300);
+          };
+
+          if (isMiss) {
+            // Miss: projectile fades halfway
+            Animated.parallel([
+              Animated.timing(projectileY,       { toValue: 60, duration: 300, useNativeDriver: true }),
+              Animated.timing(projectileOpacity, { toValue: 0,  duration: 300, useNativeDriver: true }),
+            ]).start(afterProjectile);
+          } else {
+            // Hit: projectile reaches player, then vanish
+            Animated.timing(projectileY, { toValue: 130, duration: rollStatus.status === 'Crit' ? 200 : 300, useNativeDriver: true })
+              .start(() => { projectileOpacity.setValue(0); afterProjectile(); });
+          }
+        });
+      }, 400);
+    };
+
+    attackEnemy(0, startHP, startShield);
   }
 
   // ── Enemy turn ────────────────────────────────────────────────────────────
@@ -1758,7 +2256,28 @@ export default function App() {
       abilityMsg += ` 🩸 heals ${vampireEnemyHeal}!`;
     }
 
-    const newHP = Math.max(0, currentPlayerHP - dmg);
+    // Buff: Iron Skin — reduce all incoming damage by 10%
+    if (hasBuff('ironSkin') && dmg > 0) {
+      dmg = Math.max(0, Math.round(dmg * 0.9));
+    }
+    // Buff: Glass Cannon — die instantly on any enemy crit
+    if (hasBuff('glassCanon') && rollStatus?.status === 'Crit' && dmg > 0) {
+      setPlayerHP(0); setEnemyRolling(false); setPhase('lose'); return;
+    }
+
+    let newHP = Math.max(0, currentPlayerHP - dmg);
+
+    // Buff: Blood Frenzy — lose 8 HP each enemy turn passively
+    if (hasBuff('bloodFrenzy') && newHP > 0) {
+      newHP = Math.max(0, newHP - 8);
+      abilityMsg += ' 🩸 -8 Frenzy!';
+    }
+    // Buff: Regeneration — heal 3 HP at start of next turn (applied now, after damage)
+    if (hasBuff('regeneration') && newHP > 0 && !hasBuff('deathPact')) {
+      newHP = Math.min(playerMaxHp, newHP + 3);
+      abilityMsg += ' 🌿 +3!';
+    }
+
     setPlayerHP(newHP);
     setShield(0);
     setEnemyShield(newEnemyShield);
@@ -1771,11 +2290,11 @@ export default function App() {
 
     if (newHP <= 0) { setPhase('lose'); return; }
 
-    const { hand: refilled, deck: newDeck, discard: newDiscard } = refillHand(deck, currentHand, currentDiscard);
+    const { hand: refilled, deck: newDeck, discard: newDiscard } = refillHand(deck, currentHand, currentDiscard, handSize());
     const drawnIds = refilled.filter(id => !currentHand.includes(id));
     triggerCardDraw(drawnIds);
     setDice(makeFreshDice(equippedDice));
-    setRollsLeft(MAX_ROLLS);
+    setRollsLeft(rollsPerTurn());
     setHand(refilled);
     setDeck(newDeck);
     setDiscard(newDiscard);
@@ -1807,6 +2326,12 @@ export default function App() {
   }
 
   function triggerEnemyTurn(currentPlayerHP = playerHP, currentShield = shield, currentHand = hand, currentDiscard = discard) {
+    // Regular combat with multiple enemies: use dedicated multi-enemy function
+    if (enemies.length > 0) {
+      triggerMultiEnemyTurn(currentPlayerHP, currentShield, currentHand, currentDiscard);
+      return;
+    }
+
     const currentIntention = enemyIntention || 'attack';
     const currentIntentionVal = enemyIntentionValue;
 
@@ -1856,11 +2381,22 @@ export default function App() {
           setRunRunes(pr => pr + bribeRefundAmount);
           setBribeRefundAmount(0);
         }
+        // Soul Harvest: heal 20 HP on kill
+        if (hasBuff('soulHarvest') && !hasBuff('deathPact')) {
+          setPlayerHP(hp => Math.min(playerMaxHp, hp + 20));
+        }
         setLevelCombatCount(pr => pr + 1);
         setCombatCount(pr => pr + 1);
         setMessage(`${dotIcon} DoT kills the enemy!`);
-        if (encounterType === 'boss' && currentLevel === 10) setScreen('runComplete');
-        else setPhase('cardReward');
+        if (encounterType === 'boss' && currentLevel === 10) {
+          setScreen('runComplete');
+        } else if (encounterType === 'boss') {
+          const soulsEarned = 1 + (hasBuff('soulFinder') ? 1 : 0);
+          setBossSouls(prev => prev + soulsEarned);
+          setShowBuffShop(true);
+        } else {
+          setPhase('cardReward');
+        }
         return;
       }
     }
@@ -1869,11 +2405,11 @@ export default function App() {
     if (enemyFrozenTurns > 0) {
       setEnemyFrozenTurns(prev => Math.max(0, prev - 1));
       setEnemyRolling(false);
-      const { hand: refHand, deck: refDeck, discard: refDiscard } = refillHand(deck, currentHand, currentDiscard);
+      const { hand: refHand, deck: refDeck, discard: refDiscard } = refillHand(deck, currentHand, currentDiscard, handSize());
       const frozenDrawnIds = refHand.filter(id => !currentHand.includes(id));
       triggerCardDraw(frozenDrawnIds);
       setDice(makeFreshDice(equippedDice));
-      setRollsLeft(MAX_ROLLS);
+      setRollsLeft(rollsPerTurn());
       setHand(refHand);
       setDeck(refDeck);
       setDiscard(refDiscard);
@@ -1923,14 +2459,14 @@ export default function App() {
 
   function startCombat(cardIds, equipped) {
     const shuffledDeck = shuffle(cardIds);
-    const [initialHand, remainingDeck] = drawN(6, shuffledDeck);
+    const [initialHand, remainingDeck] = drawN(handSize(), shuffledDeck);
 
     // Use levelCombatCount to determine encounter type within current level
     const currentEncounterType = getEncounterType(levelCombatCount + 1);
     const stats = getScaledEnemyStats(currentEncounterType, levelCombatCount + 1, currentLevel);
 
     // Chaos modifier: Dice Frenzy doubles enemy HP
-    let startingEnemyHP = (chaosModifier?.id === 'diceFrenzy' && currentEncounterType === 'regular') ? stats.maxHp * 2 : stats.maxHp;
+    let startingEnemyHP = chaosModifier?.id === 'diceFrenzy' ? stats.maxHp * 2 : stats.maxHp;
     // Chaos modifier: Iron Skin gives enemy starting shield
     const startingEnemyShield = chaosModifier?.id === 'ironSkin' ? Math.floor(startingEnemyHP * 0.3) : 0;
 
@@ -1938,18 +2474,50 @@ export default function App() {
     setEquippedCardIds(cardIds);
     setEquippedDice(equipped);
     cardDrawAnims.current.clear(); // clear any leftover anims from previous combat
+    enemyAnims.current.clear();
+    setDyingEnemyIds(new Set());
+    setFloatingDamages([]);
+    projectileOpacity.setValue(0);
     triggerCardDraw(initialHand);
     setDeck(remainingDeck);
     setHand(initialHand);
     setDiscard([]);
     setDice(makeFreshDice(equipped));
-    setRollsLeft(MAX_ROLLS);
-    setShield(0);
+    setRollsLeft(rollsPerTurn());
+    setShield(hasBuff('magicShield') ? 15 : 0);
     setEnemyHP(startingEnemyHP);
     setEnemyMaxHP(startingEnemyHP);
     setEnemyDamage(stats.damage);
     setEnemyAttackRange(stats.attackRange);
     setEnemyShieldRange(stats.shieldRange);
+
+    // ── Multi-enemy: generate 1-5 enemies for regular combat ──────────────
+    if (currentEncounterType === 'regular') {
+      const numEnemies = Math.floor(Math.random() * 5) + 1;
+      const hpValues  = distributeAmong(startingEnemyHP, numEnemies, 5);
+      const atkValues = distributeAmong(stats.damage,    numEnemies, 1);
+      const iconPicks = [...MULTI_ENEMY_ICONS].sort(() => Math.random() - 0.5).slice(0, numEnemies);
+      let generatedEnemies = hpValues.map((hp, i) => ({
+        id: i,
+        hp,
+        maxHp: hp,
+        damage:    atkValues[i],
+        shield:    chaosModifier?.id === 'ironSkin' ? Math.floor(hp * 0.3) : 0,
+        icon:      iconPicks[i],
+        intention: 'attack',
+      }));
+      // Sudden Death: all enemies start at 30% HP
+      if (chaosModifier?.id === 'suddenDeath') {
+        setPlayerHP(Math.max(1, Math.floor(playerMaxHp * 0.3)));
+        generatedEnemies = generatedEnemies.map(e => ({ ...e, hp: Math.max(1, Math.floor(e.maxHp * 0.3)) }));
+      }
+      setEnemies(generatedEnemies);
+      setSelectedEnemyIdx(0);
+    } else {
+      setEnemies([]);
+      setSelectedEnemyIdx(0);
+    }
+
     setMiniBossTurnCounter(0);
     setLockedCards([]);
     setStatusEffects({ shield: false, rage: { active: false, turnsLeft: 0 }, curse: { active: false } });
@@ -1973,6 +2541,8 @@ export default function App() {
     setEnemyDotDmg(0);
     setEnemyDotTurns(0);
     setEnemyFrozenTurns(0);
+    setTitanAttackCount(0);
+    setDivineGraceUsed(false);
 
     // Chaos modifiers that override starting HP
     if (chaosModifier?.id === 'suddenDeath') {
@@ -2012,7 +2582,7 @@ export default function App() {
       startMsg = `👹 BOSS! ${startingEnemyHP} HP.${modTag} Ability roll every 3rd turn!`;
     } else {
       setBossCurrentAbility(null);
-      startMsg = `Shadow Wraith attacks for ${stats.damage} damage per turn.${modTag ? modTag : ' Roll!'}`;
+      startMsg = `Roll to start your journey${modTag ? modTag : ''}`;
     }
 
     setPhase('player');
@@ -2224,6 +2794,8 @@ export default function App() {
     setEnemyDotDmg(0);
     setEnemyDotTurns(0);
     setEnemyFrozenTurns(0);
+    setEnemies([]);
+    setSelectedEnemyIdx(0);
     setHasActiveRun(true); // Mark that a run is now active
     // upgradedCards already reset at top of startNewRun
     setScreen('levelStart'); // Show level 1 intro
@@ -2251,11 +2823,29 @@ export default function App() {
             </TouchableOpacity>
           )}
           <Text style={s.enemyName}>
-            {ENEMY_NAME}
-            {encounterType === 'boss' ? ' 👹 BOSS' : encounterType === 'miniBoss' ? ' ⚡ Mini Boss' : ''}
+            {enemies.length > 0
+              ? `Enemies: ${enemies.filter(e => e.hp > 0).length}/${enemies.length}`
+              : ENEMY_NAME + (encounterType === 'boss' ? ' 👹 BOSS' : encounterType === 'miniBoss' ? ' ⚡ Mini Boss' : '')
+            }
           </Text>
         </View>
-        {chaosModifier?.id === 'blind' ? (
+
+        {enemies.length > 0 ? (
+          // ── Multi-enemy: show selected enemy HP ──
+          <View style={s.hpRow}>
+            <Text style={s.hpLabel}>
+              {enemies[selectedEnemyIdx]?.hp ?? 0}/{enemies[selectedEnemyIdx]?.maxHp ?? 0}
+            </Text>
+            <HpBar
+              current={enemies[selectedEnemyIdx]?.hp ?? 0}
+              max={enemies[selectedEnemyIdx]?.maxHp ?? 1}
+              color={C.red}
+            />
+            {enemies[selectedEnemyIdx]?.shield > 0 && (
+              <Text style={s.shieldBadge}>🛡️ {enemies[selectedEnemyIdx].shield}</Text>
+            )}
+          </View>
+        ) : chaosModifier?.id === 'blind' ? (
           <View style={s.hpRow}>
             <Text style={s.hpLabel}>???</Text>
             <View style={s.hpTrack}><View style={[s.hpFill, { width: '100%', backgroundColor: '#444' }]} /></View>
@@ -2267,16 +2857,16 @@ export default function App() {
           </View>
         )}
 
-        {/* ── Enemy shield bar ── */}
-        {enemyShield > 0 && (
+        {/* ── Enemy shield bar (single-enemy only) ── */}
+        {enemies.length === 0 && enemyShield > 0 && (
           <View style={s.enemyShieldRow}>
             <Text style={s.enemyShieldLabel}>🛡️ {enemyShield}</Text>
             <HpBar current={enemyShield} max={enemyShield} color={C.blue} />
           </View>
         )}
 
-        {/* ── DoT badge (poison/burn) ── */}
-        {enemyDotTurns > 0 && (
+        {/* ── DoT badge (single-enemy only) ── */}
+        {enemies.length === 0 && enemyDotTurns > 0 && (
           <View style={[s.enragedBadge, { borderColor: enemyDotType === 'burn' ? '#FF6B00' : '#6B00FF', backgroundColor: enemyDotType === 'burn' ? 'rgba(255,107,0,0.18)' : 'rgba(107,0,255,0.18)' }]}>
             <Text style={[s.enragedBadgeText, { color: enemyDotType === 'burn' ? '#FF8C30' : '#BB66FF' }]}>
               {enemyDotType === 'burn' ? '🔥' : '☠️'} {enemyDotDmg} dmg/turn — {enemyDotTurns} left
@@ -2284,22 +2874,22 @@ export default function App() {
           </View>
         )}
 
-        {/* ── Frozen badge ── */}
-        {enemyFrozenTurns > 0 && (
+        {/* ── Frozen badge (single-enemy only) ── */}
+        {enemies.length === 0 && enemyFrozenTurns > 0 && (
           <View style={[s.enragedBadge, { borderColor: '#5BC8E8', backgroundColor: 'rgba(91,200,232,0.15)' }]}>
             <Text style={[s.enragedBadgeText, { color: '#5BC8E8' }]}>❄️ FROZEN — {enemyFrozenTurns} turn{enemyFrozenTurns !== 1 ? 's' : ''} left</Text>
           </View>
         )}
 
-        {/* ── Enraged badge (from failed bribe) ── */}
+        {/* ── Enraged badge ── */}
         {enragedTurns > 0 && (
           <View style={s.enragedBadge}>
             <Text style={s.enragedBadgeText}>😡 ENRAGED — {enragedTurns} turn{enragedTurns !== 1 ? 's' : ''} left</Text>
           </View>
         )}
 
-        {/* ── Ability badges (active) ── */}
-        {activeAbilities.length > 0 && (
+        {/* ── Ability badges (single-enemy only) ── */}
+        {enemies.length === 0 && activeAbilities.length > 0 && (
           <View style={s.activeBadgesRow}>
             {activeAbilities.map((ab, i) => (
               <TouchableOpacity key={i} style={s.activeBadge} onPress={() => setSelectedAbilityInfo(ab)} activeOpacity={0.7}>
@@ -2310,8 +2900,8 @@ export default function App() {
           </View>
         )}
 
-        {/* ── Clickable ability emojis (mini boss / boss) ── */}
-        {(encounterType === 'miniBoss' || encounterType === 'boss') && (
+        {/* ── Clickable ability emojis (mini boss / boss only) ── */}
+        {enemies.length === 0 && (encounterType === 'miniBoss' || encounterType === 'boss') && (
           <View style={s.abilitiesRow}>
             {(encounterType === 'miniBoss' ? miniBossSelectedAbilities : bossSelectedAbilities).map((ability) => (
               <TouchableOpacity key={ability.id} onPress={() => setSelectedAbilityInfo(ability)} activeOpacity={0.7}>
@@ -2324,38 +2914,99 @@ export default function App() {
 
       {/* ── Battlefield ── */}
       <Animated.View style={[s.battlefield, { transform: [{ translateX: shakeAnim }] }]}>
-        <View style={s.enemyAvatarRow}>
-          <View style={[s.avatarWrap, enragedTurns > 0 && s.avatarWrapEnraged]}>
-            <Text style={s.avatar}>👹</Text>
+
+        {enemies.length > 0 ? (
+          // ── Multi-enemy: side-by-side cards ──────────────────────────────
+          <View style={s.multiEnemyRow}>
+            {enemies.map((enemy, idx) => {
+              const isDying = dyingEnemyIds.has(enemy.id);
+              if (enemy.hp <= 0 && !isDying) return null;
+              const isSelected = selectedEnemyIdx === idx;
+              const numAlive = enemies.filter(e => e.hp > 0).length;
+              const iconSize = numAlive > 3 ? 22 : 30;
+              const ea = getEnemyAnims(enemy.id);
+              return (
+                <Animated.View
+                  key={enemy.id}
+                  style={{
+                    transform: [{ translateY: ea.lunge }],
+                    opacity: ea.deathOpacity,
+                  }}
+                >
+                  {/* Red glow overlay on lunge */}
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[StyleSheet.absoluteFill, {
+                      backgroundColor: '#FF2222',
+                      opacity: ea.glowOpacity,
+                      borderRadius: 10,
+                      zIndex: 5,
+                    }]}
+                  />
+                  {/* White flash overlay on death */}
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[StyleSheet.absoluteFill, {
+                      backgroundColor: '#FFFFFF',
+                      opacity: ea.deathFlash,
+                      borderRadius: 10,
+                      zIndex: 6,
+                    }]}
+                  />
+                  <TouchableOpacity
+                    style={[s.multiEnemyCard, isSelected && s.multiEnemyCardSelected]}
+                    onPress={() => !enemyRolling && setSelectedEnemyIdx(idx)}
+                    activeOpacity={0.8}
+                  >
+                    {isSelected && <Text style={s.multiEnemyTargetIcon}>🎯</Text>}
+                    <Text style={{ fontSize: iconSize }}>{enemy.icon}</Text>
+                    <Text style={s.multiEnemyHP}>{enemy.hp}</Text>
+                    {enemy.shield > 0 && <Text style={s.multiEnemyShieldText}>🛡️{enemy.shield}</Text>}
+                    <Text style={s.multiEnemyIntention}>
+                      {enemy.intention === 'attack' ? '⚔️' : '🛡️'} {enemy.damage}
+                    </Text>
+                  </TouchableOpacity>
+                </Animated.View>
+              );
+            })}
           </View>
-          {enemyIntention && chaosModifier?.id !== 'blind' && (
-            <TouchableOpacity
-              style={s.intentionBox}
-              onPress={() => setSelectedAbilityInfo({
-                icon: enemyIntention === 'attack' ? '⚔️' : enemyIntention === 'defence' ? '🛡️' : '🌀',
-                name: enemyIntention === 'attack' ? 'Attack' : enemyIntention === 'defence' ? 'Defence' : 'Ability',
-                desc: enemyIntention === 'attack' ? 'enemy will attack' : enemyIntention === 'defence' ? 'enemy will shield up' : 'enemy will use an ability',
-              })}
-              activeOpacity={0.75}
-            >
-              <Text style={s.intentionIcon}>
-                {enemyIntention === 'attack' ? '⚔️' : enemyIntention === 'defence' ? '🛡️' : '🌀'}
-              </Text>
-              <Text style={[s.intentionValue, {
-                color: enemyIntention === 'attack' ? C.red : enemyIntention === 'defence' ? C.blue : '#AA00FF'
-              }]}>
-                {enemyIntentionValue}
-              </Text>
-            </TouchableOpacity>
-          )}
-          {chaosModifier?.id === 'blind' && (
-            <View style={s.intentionBox}>
-              <Text style={s.intentionIcon}>❓</Text>
-              <Text style={[s.intentionValue, { color: C.muted }]}>?</Text>
+        ) : (
+          // ── Single enemy (boss / miniBoss) ───────────────────────────────
+          <>
+            <View style={s.enemyAvatarRow}>
+              <View style={[s.avatarWrap, enragedTurns > 0 && s.avatarWrapEnraged]}>
+                <Text style={s.avatar}>👹</Text>
+              </View>
+              {enemyIntention && chaosModifier?.id !== 'blind' && (
+                <TouchableOpacity
+                  style={s.intentionBox}
+                  onPress={() => setSelectedAbilityInfo({
+                    icon: enemyIntention === 'attack' ? '⚔️' : enemyIntention === 'defence' ? '🛡️' : '🌀',
+                    name: enemyIntention === 'attack' ? 'Attack' : enemyIntention === 'defence' ? 'Defence' : 'Ability',
+                    desc: enemyIntention === 'attack' ? 'enemy will attack' : enemyIntention === 'defence' ? 'enemy will shield up' : 'enemy will use an ability',
+                  })}
+                  activeOpacity={0.75}
+                >
+                  <Text style={s.intentionIcon}>
+                    {enemyIntention === 'attack' ? '⚔️' : enemyIntention === 'defence' ? '🛡️' : '🌀'}
+                  </Text>
+                  <Text style={[s.intentionValue, {
+                    color: enemyIntention === 'attack' ? C.red : enemyIntention === 'defence' ? C.blue : '#AA00FF'
+                  }]}>
+                    {enemyIntentionValue}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              {chaosModifier?.id === 'blind' && (
+                <View style={s.intentionBox}>
+                  <Text style={s.intentionIcon}>❓</Text>
+                  <Text style={[s.intentionValue, { color: C.muted }]}>?</Text>
+                </View>
+              )}
             </View>
-          )}
-        </View>
-        <Text style={s.avatarLabel}>{ENEMY_NAME}</Text>
+            <Text style={s.avatarLabel}>{ENEMY_NAME}</Text>
+          </>
+        )}
 
         {/* Enemy dice roll display */}
         {showingEnemyRoll && (
@@ -2393,6 +3044,28 @@ export default function App() {
           </TouchableOpacity>
         )}
 
+        {/* ── Projectile orb (multi-enemy attacks) ── */}
+        {enemies.length > 0 && (
+          <Animated.View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              alignSelf: 'center',
+              top: 30,
+              width: 16,
+              height: 16,
+              borderRadius: 8,
+              backgroundColor: '#FF3333',
+              shadowColor: '#FF3333',
+              shadowOpacity: 0.9,
+              shadowRadius: 6,
+              elevation: 8,
+              opacity: projectileOpacity,
+              transform: [{ translateY: projectileY }],
+            }}
+          />
+        )}
+
         <View style={s.divider} />
         <View style={s.avatarBox}>
           <Text style={s.avatar}>🧙</Text>
@@ -2407,12 +3080,61 @@ export default function App() {
 
       {/* ── Player HP bar ── */}
       <View style={s.playerBar}>
+        {/* HP flash overlay */}
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, {
+            backgroundColor: '#FF1111',
+            opacity: playerHitFlash,
+            borderRadius: 8,
+            zIndex: 10,
+          }]}
+        />
+        {/* Floating damage numbers */}
+        {floatingDamages.map(fd => (
+          <Animated.Text
+            key={fd.id}
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              alignSelf: 'center',
+              top: -4,
+              color: '#FF4444',
+              fontSize: 22,
+              fontWeight: 'bold',
+              opacity: fd.opacity,
+              transform: [{ translateY: fd.y }],
+              zIndex: 20,
+              textShadowColor: '#000',
+              textShadowOffset: { width: 1, height: 1 },
+              textShadowRadius: 3,
+            }}
+          >
+            -{fd.value}
+          </Animated.Text>
+        ))}
         <View style={s.hpRow}>
           <Text style={s.hpLabel}>{playerHP}/{playerMaxHp}</Text>
           <HpBar current={playerHP} max={playerMaxHp} color={C.green} />
           {shield > 0 && <Text style={s.shieldBadge}>🛡️ {shield}</Text>}
           {runRunes > 0 && <Text style={s.runesBadge}>💎 {runRunes}</Text>}
+          {bossSouls > 0 && <Text style={s.soulsBadge}>💠 {bossSouls}</Text>}
         </View>
+        {/* ── Active buffs row ── */}
+        {activeBuffs.length > 0 && (
+          <View style={s.activeBuffsRow}>
+            {activeBuffs.map(b => (
+              <TouchableOpacity
+                key={b.id}
+                style={[s.activeBuffIcon, { borderColor: b.cursed ? C.red : b.cost === 3 ? '#FF8C00' : C.gold }]}
+                onPress={() => setSelectedAbilityInfo({ icon: b.cursed ? '☠️' : b.icon, name: b.name, desc: b.desc })}
+                activeOpacity={0.75}
+              >
+                <Text style={s.activeBuffEmoji}>{b.cursed ? '☠️' : b.icon}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
       </View>
 
       {/* ── Dice + Roll ── */}
@@ -2431,13 +3153,23 @@ export default function App() {
         <View style={s.rollControls}>
           <Text style={s.rollsLeft}>Rolls left: {rollsLeft}</Text>
           <TouchableOpacity
-            style={[s.rollBtn, (rollsLeft === 0 || enemyRolling) && s.rollBtnOff]}
+            style={[s.rollBtn, (rollsLeft === 0 || enemyRolling || dice.every(d => d.used)) && s.rollBtnOff]}
             onPress={rollDice}
-            disabled={rollsLeft === 0 || enemyRolling}
+            disabled={rollsLeft === 0 || enemyRolling || dice.every(d => d.used)}
             activeOpacity={0.8}
           >
             <Text style={s.rollBtnText}>ROLL</Text>
           </TouchableOpacity>
+          {hasBuff('divineGrace') && !divineGraceUsed && (
+            <TouchableOpacity
+              style={[s.divineBtn, enemyRolling && { opacity: 0.35 }]}
+              onPress={handleDivineGrace}
+              disabled={enemyRolling}
+              activeOpacity={0.8}
+            >
+              <Text style={s.divineBtnText}>🌟</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -2484,7 +3216,8 @@ export default function App() {
             phase !== 'player' ||
             bribeUsed ||
             runRunes < minBribe ||
-            chaosModifier?.id === 'goldCurse';
+            chaosModifier?.id === 'goldCurse' ||
+            encounterType === 'boss';
           return (
             <TouchableOpacity
               style={[s.bribeGameBtn, bribeDisabled && { opacity: 0.3 }]}
@@ -2510,8 +3243,15 @@ export default function App() {
             setLevelCombatCount(prev => prev + 1);
             setEnemyHP(0);
             setCombatCount(prev => prev + 1);
-            if (encounterType === 'boss' && currentLevel === 10) {
+            if (enemies.length > 0) {
+              setEnemies(prev => prev.map(e => ({ ...e, hp: 0 })));
+              setPhase('cardReward');
+            } else if (encounterType === 'boss' && currentLevel === 10) {
               setScreen('runComplete');
+            } else if (encounterType === 'boss') {
+              const soulsEarned = 1 + (activeBuffs.some(b => b.id === 'soulFinder') ? 1 : 0);
+              setBossSouls(prev => prev + soulsEarned);
+              setShowBuffShop(true);
             } else {
               setPhase('cardReward');
             }
@@ -2521,6 +3261,30 @@ export default function App() {
           <Text style={s.debugKillText}>☠ Kill</Text>
         </TouchableOpacity>
       </View>
+
+      {/* ── Buff shop overlay ── */}
+      {showBuffShop && !showDropBuff && (
+        <View style={[StyleSheet.absoluteFill, { zIndex: 998, elevation: 998 }]}>
+          <BuffShopScreen
+            bossSouls={bossSouls}
+            activeBuffs={activeBuffs}
+            purchasedBuffIds={purchasedBuffIds}
+            onBuy={handleBuyBuff}
+            onClose={handleCloseBuffShop}
+          />
+        </View>
+      )}
+
+      {/* ── Drop buff overlay ── */}
+      {showDropBuff && pendingNewBuff && (
+        <View style={[StyleSheet.absoluteFill, { zIndex: 998, elevation: 998 }]}>
+          <DropBuffScreen
+            activeBuffs={activeBuffs}
+            pendingBuff={pendingNewBuff}
+            onDrop={handleDropBuff}
+          />
+        </View>
+      )}
 
       {/* ── Bribe screen overlay ── */}
       {showBribeScreen && (
@@ -2546,6 +3310,12 @@ export default function App() {
             opacity: bribeFlashAnim,
           },
         ]}
+      />
+
+      {/* ── Victory flash overlay (last enemy dies) ── */}
+      <Animated.View
+        pointerEvents="none"
+        style={[StyleSheet.absoluteFill, { backgroundColor: '#27AE60', opacity: victoryFlashAnim }]}
       />
 
       {/* ── Die picker overlay (weighted or storm) ── */}
@@ -2588,7 +3358,12 @@ export default function App() {
                         i === weightedPickerDie.idx ? { ...d, val: n } : d
                       );
                       setDice(next);
-                      setWeightedPickerDie(null);
+                      const nextWIdx = next.findIndex((d, i) => i > weightedPickerDie.idx && d.dieId === 'weighted' && !d.used);
+                      if (nextWIdx !== -1) {
+                        setWeightedPickerDie({ idx: nextWIdx, type: 'weighted' });
+                      } else {
+                        setWeightedPickerDie(null);
+                      }
                     }}
                     activeOpacity={0.8}
                   >
@@ -3043,6 +3818,41 @@ const s = StyleSheet.create({
     fontSize: 12,
     marginLeft: 4,
   },
+  soulsBadge: {
+    color: '#5BC8E8',
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginLeft: 4,
+  },
+  activeBuffsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 4,
+  },
+  activeBuffIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 6,
+    borderWidth: 2,
+    backgroundColor: '#16213E',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  activeBuffEmoji: {
+    fontSize: 16,
+  },
+  divineBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: '#E2B04A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 6,
+  },
+  divineBtnText: {
+    fontSize: 20,
+  },
 
   // Battlefield
   battlefield: {
@@ -3334,6 +4144,8 @@ const s = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 16,
+    zIndex: 999,
+    elevation: 999,
   },
   weightedTitle: {
     color: '#E2B04A',
@@ -3611,6 +4423,56 @@ const s = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     letterSpacing: 1,
+  },
+
+  // Multi-enemy
+  multiEnemyRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 4,
+    flexWrap: 'wrap',
+  },
+  multiEnemyCard: {
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    backgroundColor: '#16213E',
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#3A3A5A',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    minWidth: 52,
+    gap: 3,
+  },
+  multiEnemyCardSelected: {
+    borderColor: '#E2B04A',
+    backgroundColor: '#1A2A4A',
+    shadowColor: '#E2B04A',
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  multiEnemyTargetIcon: {
+    fontSize: 12,
+    position: 'absolute',
+    top: 2,
+    right: 4,
+  },
+  multiEnemyHP: {
+    color: '#EFEFEF',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  multiEnemyShieldText: {
+    color: '#5BC8E8',
+    fontSize: 10,
+  },
+  multiEnemyIntention: {
+    fontSize: 14,
+    color: '#EFEFEF',
+    fontWeight: 'bold',
   },
 
   // Shrine locked toast
