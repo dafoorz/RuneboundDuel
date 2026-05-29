@@ -9,6 +9,7 @@ import {
   StatusBar as RNStatusBar,
   Animated,
   Easing,
+  Image,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
@@ -2092,14 +2093,14 @@ export default function App() {
           };
 
           if (isMiss) {
-            // Miss: projectile fades halfway
+            // Miss: projectile fades halfway (travels left)
             Animated.parallel([
-              Animated.timing(projectileY,       { toValue: 60, duration: 300, useNativeDriver: true }),
-              Animated.timing(projectileOpacity, { toValue: 0,  duration: 300, useNativeDriver: true }),
+              Animated.timing(projectileY,       { toValue: -60,  duration: 300, useNativeDriver: true }),
+              Animated.timing(projectileOpacity, { toValue: 0,    duration: 300, useNativeDriver: true }),
             ]).start(afterProjectile);
           } else {
-            // Hit: projectile reaches player, then vanish
-            Animated.timing(projectileY, { toValue: 130, duration: rollStatus.status === 'Crit' ? 200 : 300, useNativeDriver: true })
+            // Hit: projectile reaches player side, then vanish
+            Animated.timing(projectileY, { toValue: -130, duration: rollStatus.status === 'Crit' ? 200 : 300, useNativeDriver: true })
               .start(() => { projectileOpacity.setValue(0); afterProjectile(); });
           }
         });
@@ -2915,161 +2916,170 @@ export default function App() {
       {/* ── Battlefield ── */}
       <Animated.View style={[s.battlefield, { transform: [{ translateX: shakeAnim }] }]}>
 
-        {enemies.length > 0 ? (
-          // ── Multi-enemy: side-by-side cards ──────────────────────────────
-          <View style={s.multiEnemyRow}>
-            {enemies.map((enemy, idx) => {
-              const isDying = dyingEnemyIds.has(enemy.id);
-              if (enemy.hp <= 0 && !isDying) return null;
-              const isSelected = selectedEnemyIdx === idx;
-              const numAlive = enemies.filter(e => e.hp > 0).length;
-              const iconSize = numAlive > 3 ? 22 : 30;
-              const ea = getEnemyAnims(enemy.id);
-              return (
-                <Animated.View
-                  key={enemy.id}
-                  style={{
-                    transform: [{ translateY: ea.lunge }],
-                    opacity: ea.deathOpacity,
-                  }}
-                >
-                  {/* Red glow overlay on lunge */}
+        {/* ── LEFT: Player character ── */}
+        <View style={s.playerSide}>
+          <Image
+            source={require('./player_character.png')}
+            style={s.playerCharacterImg}
+            resizeMode="contain"
+          />
+          <Text style={s.avatarLabel}>You</Text>
+        </View>
+
+        {/* ── RIGHT: Enemy content ── */}
+        <View style={s.enemySide}>
+
+          {enemies.length > 0 ? (
+            // ── Multi-enemy: side-by-side cards ──────────────────────────
+            <View style={s.multiEnemyRow}>
+              {enemies.map((enemy, idx) => {
+                const isDying = dyingEnemyIds.has(enemy.id);
+                if (enemy.hp <= 0 && !isDying) return null;
+                const isSelected = selectedEnemyIdx === idx;
+                const numAlive = enemies.filter(e => e.hp > 0).length;
+                const iconSize = numAlive > 3 ? 20 : 28;
+                const ea = getEnemyAnims(enemy.id);
+                return (
                   <Animated.View
-                    pointerEvents="none"
-                    style={[StyleSheet.absoluteFill, {
-                      backgroundColor: '#FF2222',
-                      opacity: ea.glowOpacity,
-                      borderRadius: 10,
-                      zIndex: 5,
-                    }]}
-                  />
-                  {/* White flash overlay on death */}
-                  <Animated.View
-                    pointerEvents="none"
-                    style={[StyleSheet.absoluteFill, {
-                      backgroundColor: '#FFFFFF',
-                      opacity: ea.deathFlash,
-                      borderRadius: 10,
-                      zIndex: 6,
-                    }]}
-                  />
-                  <TouchableOpacity
-                    style={[s.multiEnemyCard, isSelected && s.multiEnemyCardSelected]}
-                    onPress={() => !enemyRolling && setSelectedEnemyIdx(idx)}
-                    activeOpacity={0.8}
+                    key={enemy.id}
+                    style={{
+                      transform: [{ translateY: ea.lunge }],
+                      opacity: ea.deathOpacity,
+                    }}
                   >
-                    {isSelected && <Text style={s.multiEnemyTargetIcon}>🎯</Text>}
-                    <Text style={{ fontSize: iconSize }}>{enemy.icon}</Text>
-                    <Text style={s.multiEnemyHP}>{enemy.hp}</Text>
-                    {enemy.shield > 0 && <Text style={s.multiEnemyShieldText}>🛡️{enemy.shield}</Text>}
-                    <Text style={s.multiEnemyIntention}>
-                      {enemy.intention === 'attack' ? '⚔️' : '🛡️'} {enemy.damage}
+                    {/* Red glow overlay on lunge */}
+                    <Animated.View
+                      pointerEvents="none"
+                      style={[StyleSheet.absoluteFill, {
+                        backgroundColor: '#FF2222',
+                        opacity: ea.glowOpacity,
+                        borderRadius: 10,
+                        zIndex: 5,
+                      }]}
+                    />
+                    {/* White flash overlay on death */}
+                    <Animated.View
+                      pointerEvents="none"
+                      style={[StyleSheet.absoluteFill, {
+                        backgroundColor: '#FFFFFF',
+                        opacity: ea.deathFlash,
+                        borderRadius: 10,
+                        zIndex: 6,
+                      }]}
+                    />
+                    <TouchableOpacity
+                      style={[s.multiEnemyCard, isSelected && s.multiEnemyCardSelected]}
+                      onPress={() => !enemyRolling && setSelectedEnemyIdx(idx)}
+                      activeOpacity={0.8}
+                    >
+                      {isSelected && <Text style={s.multiEnemyTargetIcon}>🎯</Text>}
+                      <Text style={{ fontSize: iconSize }}>{enemy.icon}</Text>
+                      <Text style={s.multiEnemyHP}>{enemy.hp}</Text>
+                      {enemy.shield > 0 && <Text style={s.multiEnemyShieldText}>🛡️{enemy.shield}</Text>}
+                      <Text style={s.multiEnemyIntention}>
+                        {enemy.intention === 'attack' ? '⚔️' : '🛡️'} {enemy.damage}
+                      </Text>
+                    </TouchableOpacity>
+                  </Animated.View>
+                );
+              })}
+            </View>
+          ) : (
+            // ── Single enemy (boss / miniBoss) ──────────────────────────
+            <>
+              <View style={s.enemyAvatarRow}>
+                <View style={[s.avatarWrap, enragedTurns > 0 && s.avatarWrapEnraged]}>
+                  <Text style={s.avatar}>👹</Text>
+                </View>
+                {enemyIntention && chaosModifier?.id !== 'blind' && (
+                  <TouchableOpacity
+                    style={s.intentionBox}
+                    onPress={() => setSelectedAbilityInfo({
+                      icon: enemyIntention === 'attack' ? '⚔️' : enemyIntention === 'defence' ? '🛡️' : '🌀',
+                      name: enemyIntention === 'attack' ? 'Attack' : enemyIntention === 'defence' ? 'Defence' : 'Ability',
+                      desc: enemyIntention === 'attack' ? 'enemy will attack' : enemyIntention === 'defence' ? 'enemy will shield up' : 'enemy will use an ability',
+                    })}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={s.intentionIcon}>
+                      {enemyIntention === 'attack' ? '⚔️' : enemyIntention === 'defence' ? '🛡️' : '🌀'}
+                    </Text>
+                    <Text style={[s.intentionValue, {
+                      color: enemyIntention === 'attack' ? C.red : enemyIntention === 'defence' ? C.blue : '#AA00FF'
+                    }]}>
+                      {enemyIntentionValue}
                     </Text>
                   </TouchableOpacity>
-                </Animated.View>
-              );
-            })}
-          </View>
-        ) : (
-          // ── Single enemy (boss / miniBoss) ───────────────────────────────
-          <>
-            <View style={s.enemyAvatarRow}>
-              <View style={[s.avatarWrap, enragedTurns > 0 && s.avatarWrapEnraged]}>
-                <Text style={s.avatar}>👹</Text>
+                )}
+                {chaosModifier?.id === 'blind' && (
+                  <View style={s.intentionBox}>
+                    <Text style={s.intentionIcon}>❓</Text>
+                    <Text style={[s.intentionValue, { color: C.muted }]}>?</Text>
+                  </View>
+                )}
               </View>
-              {enemyIntention && chaosModifier?.id !== 'blind' && (
-                <TouchableOpacity
-                  style={s.intentionBox}
-                  onPress={() => setSelectedAbilityInfo({
-                    icon: enemyIntention === 'attack' ? '⚔️' : enemyIntention === 'defence' ? '🛡️' : '🌀',
-                    name: enemyIntention === 'attack' ? 'Attack' : enemyIntention === 'defence' ? 'Defence' : 'Ability',
-                    desc: enemyIntention === 'attack' ? 'enemy will attack' : enemyIntention === 'defence' ? 'enemy will shield up' : 'enemy will use an ability',
-                  })}
-                  activeOpacity={0.75}
-                >
-                  <Text style={s.intentionIcon}>
-                    {enemyIntention === 'attack' ? '⚔️' : enemyIntention === 'defence' ? '🛡️' : '🌀'}
+              <Text style={s.avatarLabel}>{ENEMY_NAME}</Text>
+            </>
+          )}
+
+          {/* Enemy dice roll display */}
+          {showingEnemyRoll && (
+            <TouchableOpacity
+              style={s.enemyRollSection}
+              activeOpacity={0.75}
+              disabled={enemyRolling}
+              onPress={() => setSelectedAbilityInfo(
+                enemyDiceSum <= 6
+                  ? { icon: '💨', name: 'Miss', desc: "the enemy's attack fails completely" }
+                  : enemyDiceSum >= 15
+                  ? { icon: '💥', name: 'Critical Hit', desc: 'double damage dealt!' }
+                  : { icon: '⚔️', name: 'Normal Hit', desc: 'standard damage applied' }
+              )}
+            >
+              <Text style={s.enemyRollLabel}>Enemy Roll</Text>
+              <View style={s.enemyDiceRow}>
+                {enemyDice.map((val, i) => (
+                  <EnemyDieDisplay
+                    key={i}
+                    val={val}
+                    rotation={enemyDiceRotation}
+                    isAnimating={enemyRolling}
+                  />
+                ))}
+              </View>
+              <View style={s.enemyRollResult}>
+                <Text style={s.enemyDiceSum}>{enemyDiceSum}</Text>
+                {enemyRollStatus && (
+                  <Text style={[s.enemyRollStatus, { color: enemyRollStatus.color }]}>
+                    {enemyRollStatus.label}
                   </Text>
-                  <Text style={[s.intentionValue, {
-                    color: enemyIntention === 'attack' ? C.red : enemyIntention === 'defence' ? C.blue : '#AA00FF'
-                  }]}>
-                    {enemyIntentionValue}
-                  </Text>
-                </TouchableOpacity>
-              )}
-              {chaosModifier?.id === 'blind' && (
-                <View style={s.intentionBox}>
-                  <Text style={s.intentionIcon}>❓</Text>
-                  <Text style={[s.intentionValue, { color: C.muted }]}>?</Text>
-                </View>
-              )}
-            </View>
-            <Text style={s.avatarLabel}>{ENEMY_NAME}</Text>
-          </>
-        )}
+                )}
+              </View>
+            </TouchableOpacity>
+          )}
 
-        {/* Enemy dice roll display */}
-        {showingEnemyRoll && (
-          <TouchableOpacity
-            style={s.enemyRollSection}
-            activeOpacity={0.75}
-            disabled={enemyRolling}
-            onPress={() => setSelectedAbilityInfo(
-              enemyDiceSum <= 6
-                ? { icon: '💨', name: 'Miss', desc: "the enemy's attack fails completely" }
-                : enemyDiceSum >= 15
-                ? { icon: '💥', name: 'Critical Hit', desc: 'double damage dealt!' }
-                : { icon: '⚔️', name: 'Normal Hit', desc: 'standard damage applied' }
-            )}
-          >
-            <Text style={s.enemyRollLabel}>Enemy Roll</Text>
-            <View style={s.enemyDiceRow}>
-              {enemyDice.map((val, i) => (
-                <EnemyDieDisplay
-                  key={i}
-                  val={val}
-                  rotation={enemyDiceRotation}
-                  isAnimating={enemyRolling}
-                />
-              ))}
-            </View>
-            <View style={s.enemyRollResult}>
-              <Text style={s.enemyDiceSum}>{enemyDiceSum}</Text>
-              {enemyRollStatus && (
-                <Text style={[s.enemyRollStatus, { color: enemyRollStatus.color }]}>
-                  {enemyRollStatus.label}
-                </Text>
-              )}
-            </View>
-          </TouchableOpacity>
-        )}
+          {/* ── Projectile orb: flies right→left toward player ── */}
+          {enemies.length > 0 && (
+            <Animated.View
+              pointerEvents="none"
+              style={{
+                position: 'absolute',
+                right: 10,
+                top: '40%',
+                width: 14,
+                height: 14,
+                borderRadius: 7,
+                backgroundColor: '#FF3333',
+                shadowColor: '#FF3333',
+                shadowOpacity: 0.9,
+                shadowRadius: 6,
+                elevation: 8,
+                opacity: projectileOpacity,
+                transform: [{ translateX: projectileY }],
+              }}
+            />
+          )}
 
-        {/* ── Projectile orb (multi-enemy attacks) ── */}
-        {enemies.length > 0 && (
-          <Animated.View
-            pointerEvents="none"
-            style={{
-              position: 'absolute',
-              alignSelf: 'center',
-              top: 30,
-              width: 16,
-              height: 16,
-              borderRadius: 8,
-              backgroundColor: '#FF3333',
-              shadowColor: '#FF3333',
-              shadowOpacity: 0.9,
-              shadowRadius: 6,
-              elevation: 8,
-              opacity: projectileOpacity,
-              transform: [{ translateY: projectileY }],
-            }}
-          />
-        )}
-
-        <View style={s.divider} />
-        <View style={s.avatarBox}>
-          <Text style={s.avatar}>🧙</Text>
-          <Text style={s.avatarLabel}>You</Text>
         </View>
       </Animated.View>
 
@@ -3857,10 +3867,27 @@ const s = StyleSheet.create({
   // Battlefield
   battlefield: {
     flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-evenly',
-    paddingTop: 8,
-    paddingBottom: 40,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  playerSide: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  enemySide: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  playerCharacterImg: {
+    width: 90,
+    height: 110,
   },
   avatarBox: {
     alignItems: 'center',
