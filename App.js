@@ -2093,14 +2093,14 @@ export default function App() {
           };
 
           if (isMiss) {
-            // Miss: projectile fades halfway (travels left)
+            // Miss: projectile fades halfway between enemies and player
             Animated.parallel([
-              Animated.timing(projectileY,       { toValue: -60,  duration: 300, useNativeDriver: true }),
-              Animated.timing(projectileOpacity, { toValue: 0,    duration: 300, useNativeDriver: true }),
+              Animated.timing(projectileY,       { toValue: -90,  duration: 350, useNativeDriver: true }),
+              Animated.timing(projectileOpacity, { toValue: 0,    duration: 350, useNativeDriver: true }),
             ]).start(afterProjectile);
           } else {
-            // Hit: projectile reaches player side, then vanish
-            Animated.timing(projectileY, { toValue: -130, duration: rollStatus.status === 'Crit' ? 200 : 300, useNativeDriver: true })
+            // Hit: projectile travels all the way to the player character
+            Animated.timing(projectileY, { toValue: -180, duration: rollStatus.status === 'Crit' ? 220 : 320, useNativeDriver: true })
               .start(() => { projectileOpacity.setValue(0); afterProjectile(); });
           }
         });
@@ -3058,13 +3058,13 @@ export default function App() {
             </TouchableOpacity>
           )}
 
-          {/* ── Projectile orb: flies right→left toward player ── */}
+          {/* ── Projectile orb: flies from enemy left-edge → player ── */}
           {enemies.length > 0 && (
             <Animated.View
               pointerEvents="none"
               style={{
                 position: 'absolute',
-                right: 10,
+                left: 0,
                 top: '40%',
                 width: 14,
                 height: 14,
@@ -3886,8 +3886,8 @@ const s = StyleSheet.create({
     gap: 6,
   },
   playerCharacterImg: {
-    width: 90,
-    height: 110,
+    width: 140,
+    height: 170,
   },
   avatarBox: {
     alignItems: 'center',
