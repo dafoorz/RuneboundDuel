@@ -383,6 +383,6 @@ __d(function(g,r,i,a,m,_e,d){"use strict";function e(e){return e&&e.__esModule?e
 __d(function(g,r,i,a,m,e,d){m.exports="/RuneboundDuel/assets/assets/dice_roll.8b8ba7b6db42463d6db827c70dc2b958.wav"},320,[]);
 __d(function(g,r,i,a,m,e,d){m.exports="/RuneboundDuel/assets/assets/card_draw.5cd371c1d97b9f7725a01291079f53bf.wav"},321,[]);
 __d(function(g,r,i,a,m,e,d){m.exports="/RuneboundDuel/assets/assets/hit.c8aaee9de16158fde1cd53245777038f.wav"},322,[]);
-__d(function(e,a,t,n,r,u,d){r.exports={uri:"/RuneboundDuel/assets/player_character.8aeea17a92ea6b7097b583d2ee94a07a.png",width:1024,height:1024}},323,[]);
+__d(function(e,d,a,t,c,n,r){c.exports={uri:"/RuneboundDuel/assets/player_character.ddf7d5f8c4b55af52564a01d459eb88c.png",width:1051,height:573}},323,[]);
 __r(3);
 __r(0);
