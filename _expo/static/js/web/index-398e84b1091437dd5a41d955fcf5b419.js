@@ -384,7 +384,7 @@ __d(function(g,r,i,a,m,e,d){m.exports="/RuneboundDuel/assets/assets/dice_roll.8b
 __d(function(g,r,i,a,m,e,d){m.exports="/RuneboundDuel/assets/assets/card_draw.5cd371c1d97b9f7725a01291079f53bf.wav"},321,[]);
 __d(function(g,r,i,a,m,e,d){m.exports="/RuneboundDuel/assets/assets/hit.c8aaee9de16158fde1cd53245777038f.wav"},322,[]);
 __d(function(d,e,n,u,b,t,a){b.exports={uri:"/RuneboundDuel/assets/Background_Level1.7b7ad621222140dd55bab41d98ed4bf6.png",width:1408,height:768}},323,[]);
-__d(function(e,t,a,d,n,r,u){n.exports={uri:"/RuneboundDuel/assets/player_character.65f2fd41734fbc109810e5d714a05026.png",width:576,height:535}},324,[]);
+__d(function(e,a,r,d,t,b,i){t.exports={uri:"/RuneboundDuel/assets/player_character/player_character_idle.66fbdd33700f3bf3299a94b00be41db6.gif",width:520,height:420}},324,[]);
 __d(function(e,n,i,s,t,u,b){t.exports={uri:"/RuneboundDuel/assets/Minions_Level1.3b204a391875c21a5b54f6db456ec37f.png",width:601,height:669}},325,[]);
 __d(function(e,s,a,n,t,u,d){t.exports={uri:"/RuneboundDuel/assets/boss_level1.d6a28609a88e927f34ea88763b0a6243.png",width:1135,height:751}},326,[]);
 __r(3);
