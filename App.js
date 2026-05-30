@@ -10,6 +10,9 @@ import {
   Animated,
   Easing,
   Image,
+  ImageBackground,
+  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
@@ -47,6 +50,50 @@ const C = {
 };
 
 const PLAYER_MAX_HP = 100;
+const SCREEN_W = Dimensions.get('window').width;
+const SCREEN_H = Dimensions.get('window').height;
+// Scale characters relative to 1920px baseline so they look the same on every screen size
+const CHAR_SCALE = Math.min(2.5, Math.max(0.5, SCREEN_W / 1920));
+
+// ── Minion GIF sources per level / type ──────────────────────────────────────
+const MINION_GIFS = {
+  1: {
+    Wraith1: {
+      idle:      require('./Minions_Gif/Minions_Level1/Wraith1/Wraith1_Idle.gif'),
+      attacking: require('./Minions_Gif/Minions_Level1/Wraith1/Wraith1_Attacking.gif'),
+      hurt:      require('./Minions_Gif/Minions_Level1/Wraith1/Wraith1_Hurt.gif'),
+      dying:     require('./Minions_Gif/Minions_Level1/Wraith1/Wraith1_Dying.gif'),
+    },
+    Wraith2: {
+      idle:      require('./Minions_Gif/Minions_Level1/Wraith2/Wraith2_Idle.gif'),
+      attacking: require('./Minions_Gif/Minions_Level1/Wraith2/Wraith2_Attacking.gif'),
+      hurt:      require('./Minions_Gif/Minions_Level1/Wraith2/Wraith2_Hurt.gif'),
+      dying:     require('./Minions_Gif/Minions_Level1/Wraith2/Wraith2_Dying.gif'),
+    },
+    Wraith3: {
+      idle:      require('./Minions_Gif/Minions_Level1/Wraith3/Wraith3_Idle.gif'),
+      attacking: require('./Minions_Gif/Minions_Level1/Wraith3/Wraith3_Attacking.gif'),
+      hurt:      require('./Minions_Gif/Minions_Level1/Wraith3/Wraith3_Hurt.gif'),
+      dying:     require('./Minions_Gif/Minions_Level1/Wraith3/Wraith3_Dying.gif'),
+    },
+  },
+};
+const MINION_TYPES_BY_LEVEL = {
+  1: ['Wraith1', 'Wraith2', 'Wraith3'],
+};
+function pickMinionType(level) {
+  const types = MINION_TYPES_BY_LEVEL[level];
+  if (!types) return null;
+  return types[Math.floor(Math.random() * types.length)];
+}
+
+// ── Player GIF sources (static requires so Metro can bundle them) ─────────────
+const PLAYER_GIFS = {
+  idle:      require('./player_character_Gif/Player_Character_Idle.gif'),
+  attacking: require('./player_character_Gif/Player_Character_Attacking.gif'),
+  hurt:      require('./player_character_Gif/Player_Character_Hurt.gif'),
+  dying:     require('./player_character_Gif/Player_Character_Dying.gif'),
+};
 const ENEMY_MAX_HP  = 80;
 const ENEMY_NAME    = 'Shadow Wraith';
 const ENEMY_ATTACK  = 10;
@@ -708,6 +755,26 @@ const BASE_CARD_COLLECTION = [
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
+function CharacterHpBar({ current, max, barWidth = 120 }) {
+  const pct = max > 0 ? Math.max(0, Math.min(1, current / max)) : 0;
+  const fillAnim = useRef(new Animated.Value(pct)).current;
+  useEffect(() => {
+    Animated.timing(fillAnim, { toValue: pct, duration: 280, useNativeDriver: false }).start();
+  }, [pct]);
+  const color = pct > 0.6 ? '#27AE60' : pct > 0.3 ? '#E8A020' : '#C0392B';
+  const fillWidth = fillAnim.interpolate({ inputRange: [0, 1], outputRange: [0, barWidth] });
+  return (
+    <View style={{ alignItems: 'center', gap: 3 }}>
+      <View style={{ width: barWidth, height: 8, backgroundColor: '#1A1A1A', borderRadius: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)', overflow: 'hidden' }}>
+        <Animated.View style={{ height: '100%', width: fillWidth, backgroundColor: color, borderRadius: 4 }} />
+      </View>
+      <Text style={{ color: '#EEE', fontSize: 10, fontWeight: 'bold', textShadowColor: '#000', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 2 }}>
+        {current}/{max}
+      </Text>
+    </View>
+  );
+}
+
 function HpBar({ current, max, color }) {
   const pct = Math.max(0, Math.min(1, current / max));
   return (
@@ -796,6 +863,9 @@ function EnemyDieDisplay({ val, rotation, isAnimating }) {
 // ─── Main component ──────────────────────────────────────────────────────────
 
 export default function App() {
+  const { width: winW, height: winH } = useWindowDimensions();
+  const charScale = Math.min(2.5, Math.max(0.5, winW / 1920));
+
   const [statusBarKey, setStatusBarKey] = useState(0);
   const diceRotations = useRef([
     new Animated.Value(0),
@@ -810,9 +880,9 @@ export default function App() {
   const bribeFlashAnim    = useRef(new Animated.Value(0)).current;
   const playerHitFlash    = useRef(new Animated.Value(0)).current;
   const victoryFlashAnim  = useRef(new Animated.Value(0)).current;
-  const projectileY       = useRef(new Animated.Value(0)).current;
-  const projectileOpacity = useRef(new Animated.Value(0)).current;
-  const enemyAnims        = useRef(new Map()); // id → { lunge, glowOpacity, deathOpacity, deathFlash }
+  const playerSlashOpacity = useRef(new Animated.Value(0)).current;
+  const playerSlashScale   = useRef(new Animated.Value(1)).current;
+  const enemyAnims        = useRef(new Map()); // id → { lunge, glowOpacity, deathOpacity, deathFlash, slashOpacity, slashScale }
   const diceSoundRef      = useRef(null);
   const cardSoundRef      = useRef(null);
   const hitSoundRef       = useRef(null);
@@ -852,6 +922,10 @@ export default function App() {
   const [shield,           setShield]           = useState(0);
   const [message,          setMessage]          = useState('');
   const [phase,            setPhase]            = useState('player'); // 'player'|'cardReward'|'lose'
+  const [playerAnim,       setPlayerAnim]       = useState('idle');   // 'idle'|'attacking'|'hurt'|'dying'
+  const [playerAnimKey,    setPlayerAnimKey]    = useState(0);        // increment to restart GIF
+  const [hoveredCardId,    setHoveredCardId]    = useState(null);     // card hovered on PC
+  const [bgSize,           setBgSize]          = useState({ w: SCREEN_W, h: SCREEN_H }); // measured content area
   const [weightedPickerDie, setWeightedPickerDie] = useState(null); // { idx } | null
   const [deck,             setDeck]             = useState([]);
   const [hand,             setHand]             = useState([]);
@@ -877,11 +951,11 @@ export default function App() {
     curse: { active: false },
   });
   const [lockedCards,      setLockedCards]      = useState([]);
-  const [enemyDice,        setEnemyDice]        = useState([]);
+  const [enemyDice,        setEnemyDice]        = useState([null, null, null]);
   const [enemyRollStatus,  setEnemyRollStatus]  = useState(null);
   const [enemyDiceSum,     setEnemyDiceSum]     = useState(0);
   const [enemyTurnCount,   setEnemyTurnCount]   = useState(0);
-  const [showingEnemyRoll, setShowingEnemyRoll] = useState(false);
+  const [showingEnemyRoll, setShowingEnemyRoll] = useState(true);
   const [enemyRolling,     setEnemyRolling]     = useState(false);
   const [selectedAbilityInfo, setSelectedAbilityInfo] = useState(null);
   const [enemyIntention,      setEnemyIntention]      = useState(null); // 'attack'|'defence'|'ability'
@@ -907,7 +981,8 @@ export default function App() {
   const [enemies,          setEnemies]          = useState([]); // active during regular combat
   const [selectedEnemyIdx, setSelectedEnemyIdx] = useState(0);
   const [dyingEnemyIds,    setDyingEnemyIds]    = useState(new Set()); // enemies mid-death animation
-  const [floatingDamages,  setFloatingDamages]  = useState([]); // [{ id, value, y, opacity }]
+  const [floatingDamages,     setFloatingDamages]     = useState([]); // player: [{ id, value, y, opacity }]
+  const [enemyFloatingDamages, setEnemyFloatingDamages] = useState([]); // enemies: [{ id, enemyId, value, y, opacity }]
 
   // ── Bribe system ─────────────────────────────────────────────────────────
   const [showBribeScreen,  setShowBribeScreen]  = useState(false);
@@ -1392,6 +1467,27 @@ export default function App() {
     ]).start();
   }
 
+  // Play a player GIF for `duration` ms then return to idle
+  function playPlayerAnim(anim, duration) {
+    setPlayerAnim(anim);
+    setPlayerAnimKey(k => k + 1);
+    setTimeout(() => { setPlayerAnim('idle'); setPlayerAnimKey(k => k + 1); }, duration);
+  }
+
+  // Play a minion GIF state for `duration` ms then return to idle (pass null duration to stay)
+  function setEnemyGifAnim(id, anim, duration) {
+    setEnemies(prev => prev.map(e =>
+      e.id === id ? { ...e, gifAnim: anim, gifKey: (e.gifKey || 0) + 1 } : e
+    ));
+    if (duration) {
+      setTimeout(() => {
+        setEnemies(prev => prev.map(e =>
+          e.id === id ? { ...e, gifAnim: 'idle', gifKey: (e.gifKey || 0) + 1 } : e
+        ));
+      }, duration);
+    }
+  }
+
   function handleBribeAttempt(goldAmount) {
     const chance = getBribeChance(goldAmount, encounterType);
     setRunRunes(prev => prev - goldAmount);   // deduct from in-run pool regardless
@@ -1449,20 +1545,30 @@ export default function App() {
         glowOpacity:  new Animated.Value(0),
         deathOpacity: new Animated.Value(1),
         deathFlash:   new Animated.Value(0),
+        slashOpacity: new Animated.Value(0),
+        slashScale:   new Animated.Value(1),
       });
     }
     return enemyAnims.current.get(id);
   }
 
+  function playSlash(opacityAnim, scaleAnim) {
+    opacityAnim.setValue(1);
+    scaleAnim.setValue(0.2);
+    Animated.parallel([
+      Animated.timing(scaleAnim,   { toValue: 1.5, duration: 160, useNativeDriver: true }),
+      Animated.sequence([
+        Animated.delay(100),
+        Animated.timing(opacityAnim, { toValue: 0, duration: 220, useNativeDriver: true }),
+      ]),
+    ]).start();
+  }
+
   function playEnemyDeath(enemyId, onDone) {
-    const a = getEnemyAnims(enemyId);
-    a.deathOpacity.setValue(1);
-    a.deathFlash.setValue(0);
-    Animated.sequence([
-      Animated.timing(a.deathFlash,   { toValue: 1, duration: 100, useNativeDriver: true }),
-      Animated.timing(a.deathFlash,   { toValue: 0, duration: 100, useNativeDriver: true }),
-      Animated.timing(a.deathOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
-    ]).start(onDone);
+    // gifAnim is already set to 'dying' before this is called
+    // Wait for dying GIF to finish (adjust DYING_GIF_MS if GIFs are longer/shorter)
+    const DYING_GIF_MS = 1950; // exact duration of dying GIFs (15 frames × 130ms)
+    setTimeout(onDone, DYING_GIF_MS);
   }
 
   function addFloatingDamage(value) {
@@ -1477,6 +1583,20 @@ export default function App() {
         Animated.timing(fdO, { toValue: 0, duration: 300, useNativeDriver: true }),
       ]),
     ]).start(() => setFloatingDamages(prev => prev.filter(f => f.id !== id)));
+  }
+
+  function addEnemyFloatingDamage(enemyId, value) {
+    const id  = Date.now() + Math.random();
+    const fdY = new Animated.Value(0);
+    const fdO = new Animated.Value(1);
+    setEnemyFloatingDamages(prev => [...prev, { id, enemyId, value, y: fdY, opacity: fdO }]);
+    Animated.parallel([
+      Animated.timing(fdY, { toValue: -44, duration: 800, useNativeDriver: true }),
+      Animated.sequence([
+        Animated.delay(400),
+        Animated.timing(fdO, { toValue: 0, duration: 300, useNativeDriver: true }),
+      ]),
+    ]).start(() => setEnemyFloatingDamages(prev => prev.filter(f => f.id !== id)));
   }
 
   // ── Divine Grace: free full reroll once per combat ───────────────────────
@@ -1691,6 +1811,7 @@ export default function App() {
       }
 
       let dmgToEnemy = result.enemyDmg;
+      if (dmgToEnemy > 0) playPlayerAnim('attacking', 700);
 
       if (enemies.length > 0) {
         // ── Multi-enemy (regular combat) ──────────────────────────────────
@@ -1703,7 +1824,21 @@ export default function App() {
           newEnemiesArr.forEach((e, i) => {
             if (e.hp <= 0) return;
             const abs = Math.min(e.shield, dmgToEnemy);
-            newEnemiesArr[i] = { ...e, hp: Math.max(0, e.hp - (dmgToEnemy - abs)), shield: Math.max(0, e.shield - abs) };
+            const actualDmg = dmgToEnemy - abs;
+            const willDie = e.hp - actualDmg <= 0;
+            newEnemiesArr[i] = { ...e, hp: Math.max(0, e.hp - actualDmg), shield: Math.max(0, e.shield - abs),
+              gifAnim: actualDmg > 0 ? (willDie ? 'dying' : 'hurt') : e.gifAnim,
+              gifKey: actualDmg > 0 ? (e.gifKey || 0) + 1 : e.gifKey,
+            };
+            if (actualDmg > 0) {
+              const ea = getEnemyAnims(e.id);
+              playSlash(ea.slashOpacity, ea.slashScale);
+              addEnemyFloatingDamage(e.id, actualDmg);
+              if (!willDie) {
+                const eid = e.id;
+                setTimeout(() => setEnemies(prev => prev.map(en => en.id === eid ? { ...en, gifAnim: 'idle', gifKey: (en.gifKey || 0) + 1 } : en)), 500);
+              }
+            }
           });
         } else {
           // Single target: hit selected enemy (resolve stale index if needed)
@@ -1714,8 +1849,21 @@ export default function App() {
           if (ti >= 0) {
             const abs = Math.min(newEnemiesArr[ti].shield, dmgToEnemy);
             const actualDmg = dmgToEnemy - abs;
-            newEnemiesArr[ti] = { ...newEnemiesArr[ti], hp: Math.max(0, newEnemiesArr[ti].hp - actualDmg), shield: Math.max(0, newEnemiesArr[ti].shield - abs) };
+            const willDie = newEnemiesArr[ti].hp - actualDmg <= 0 && enemies[ti]?.hp > 0;
+            newEnemiesArr[ti] = { ...newEnemiesArr[ti], hp: Math.max(0, newEnemiesArr[ti].hp - actualDmg), shield: Math.max(0, newEnemiesArr[ti].shield - abs),
+              gifAnim: actualDmg > 0 ? (willDie ? 'dying' : 'hurt') : newEnemiesArr[ti].gifAnim,
+              gifKey: actualDmg > 0 ? (newEnemiesArr[ti].gifKey || 0) + 1 : newEnemiesArr[ti].gifKey,
+            };
             dmgToEnemy = actualDmg; // for lifebond calc
+            if (actualDmg > 0) {
+              const ea = getEnemyAnims(newEnemiesArr[ti].id);
+              playSlash(ea.slashOpacity, ea.slashScale);
+              addEnemyFloatingDamage(newEnemiesArr[ti].id, actualDmg);
+              if (!willDie) {
+                const eid = newEnemiesArr[ti].id;
+                setTimeout(() => setEnemies(prev => prev.map(en => en.id === eid ? { ...en, gifAnim: 'idle', gifKey: (en.gifKey || 0) + 1 } : en)), 500);
+              }
+            }
             // Individual death animation (if not all dead — all-dead handled below)
             const justDied = newEnemiesArr[ti].hp <= 0 && enemies[ti]?.hp > 0;
             if (justDied) {
@@ -1874,21 +2022,24 @@ export default function App() {
         setBossSouls(prev => prev + soulsEarned);
         setShowBuffShop(true);
       } else if (enemies.length > 0) {
-        // Multi-enemy: play death animations for all newly-dead enemies, then reward
-        // `enemies` here still reflects old state in this closure — use it to find who was alive
+        // Multi-enemy: wait for ALL dying GIFs to finish, then show reward
         const newlyDead = enemies.filter(e => e.hp > 0);
         const dyingSet = new Set(newlyDead.map(e => e.id));
         setDyingEnemyIds(dyingSet);
+        let doneCount = 0;
+        const total = newlyDead.length;
+        const onOneDead = () => {
+          doneCount++;
+          if (doneCount >= total) {
+            victoryFlashAnim.setValue(0.45);
+            Animated.timing(victoryFlashAnim, { toValue: 0, duration: 700, useNativeDriver: true }).start();
+            setDyingEnemyIds(new Set());
+            setPhase('cardReward');
+          }
+        };
         newlyDead.forEach(e => {
-          playEnemyDeath(e.id, () => {}); // callback is no-op; cleanup via setTimeout below
+          playEnemyDeath(e.id, onOneDead);
         });
-        setTimeout(() => {
-          // Victory flash
-          victoryFlashAnim.setValue(0.45);
-          Animated.timing(victoryFlashAnim, { toValue: 0, duration: 700, useNativeDriver: true }).start();
-          setDyingEnemyIds(new Set());
-          setPhase('cardReward');
-        }, 550);
       } else {
         setPhase('cardReward');
       }
@@ -1909,6 +2060,7 @@ export default function App() {
     if (livingEnemies.length === 0) return;
 
     setEnemyRolling(true);
+    setHoveredCardId(null);
     damageDealtThisTurnRef.current = 0;
 
     // ── DoT tick: applied to selected enemy before attacks ──
@@ -2055,54 +2207,28 @@ export default function App() {
         }
         if (chaosModifier?.id === 'speedRound' && dmg > 0) dmg *= 2;
         if (enragedTurns > 0 && dmg > 0) dmg *= 2;
-        dmg = Math.max(0, dmg - shld);
+        const absorbed = Math.min(shld, dmg);
+        const remainingShield = shld - absorbed;
+        dmg = Math.max(0, dmg - absorbed);
         if (hasBuff('ironSkin') && dmg > 0) dmg = Math.max(0, Math.round(dmg * 0.9));
         const newHP = Math.max(0, hp - dmg);
 
-        // ── 1. Lunge animation ──────────────────────────────────────────────
-        const ea = getEnemyAnims(enemy.id);
-        ea.lunge.setValue(0);
-        ea.glowOpacity.setValue(0);
-
-        Animated.parallel([
-          Animated.sequence([
-            Animated.timing(ea.lunge,       { toValue: 32, duration: 200, useNativeDriver: true }),
-            Animated.timing(ea.lunge,       { toValue: 0,  duration: 150, useNativeDriver: true }),
-          ]),
-          Animated.sequence([
-            Animated.timing(ea.glowOpacity, { toValue: dmg > 0 ? 0.55 : 0, duration: 160, useNativeDriver: true }),
-            Animated.timing(ea.glowOpacity, { toValue: 0, duration: 190, useNativeDriver: true }),
-          ]),
-        ]).start(() => {
-          // ── 2. Projectile ───────────────────────────────────────────────
+        // ── 1. Attack animation (GIF) ───────────────────────────────────────
+        if (dmg > 0) setEnemyGifAnim(enemy.id, 'attacking', 500);
+        setTimeout(() => {
+          // ── 2. Apply damage + slash animation ──────────────────────────
           const isMiss = rollStatus.status === 'Miss';
-          projectileY.setValue(0);
-          projectileOpacity.setValue(1);
-
-          const afterProjectile = () => {
-            // ── 3. Apply damage + player hit effects ────────────────────
-            setPlayerHP(newHP);
-            setMessage(`${enm} rolls ${sum} (${rollStatus.label})${dmg > 0 ? ` — ${dmg} dmg!` : '!'}`);
-            if (dmg > 0) {
-              playerHitFlash.setValue(0.75);
-              Animated.timing(playerHitFlash, { toValue: 0, duration: 500, useNativeDriver: true }).start();
-              addFloatingDamage(dmg);
-              triggerShake();
-            }
-            setTimeout(() => { attackEnemy(listIdx + 1, newHP, 0); }, 300);
-          };
-
-          if (isMiss) {
-            // Miss: projectile fades halfway between enemies and player
-            Animated.parallel([
-              Animated.timing(projectileY,       { toValue: -90,  duration: 350, useNativeDriver: true }),
-              Animated.timing(projectileOpacity, { toValue: 0,    duration: 350, useNativeDriver: true }),
-            ]).start(afterProjectile);
-          } else {
-            // Hit: projectile travels all the way to the player character
-            Animated.timing(projectileY, { toValue: -180, duration: rollStatus.status === 'Crit' ? 220 : 320, useNativeDriver: true })
-              .start(() => { projectileOpacity.setValue(0); afterProjectile(); });
+          setPlayerHP(newHP);
+          setShield(remainingShield);
+          setMessage(`${enm} rolls ${sum} (${rollStatus.label})${dmg > 0 ? ` — ${dmg} dmg!` : '!'}`);
+          if (!isMiss && dmg > 0) {
+            playSlash(playerSlashOpacity, playerSlashScale);
+            playerHitFlash.setValue(0.75);
+            Animated.timing(playerHitFlash, { toValue: 0, duration: 500, useNativeDriver: true }).start();
+            addFloatingDamage(dmg);
+            playPlayerAnim('hurt', 600);
           }
+          setTimeout(() => { attackEnemy(listIdx + 1, newHP, remainingShield); }, 350);
         });
       }, 400);
     };
@@ -2267,6 +2393,7 @@ export default function App() {
     }
 
     let newHP = Math.max(0, currentPlayerHP - dmg);
+    if (dmg > 0) playPlayerAnim('hurt', 600);
 
     // Buff: Blood Frenzy — lose 8 HP each enemy turn passively
     if (hasBuff('bloodFrenzy') && newHP > 0) {
@@ -2336,7 +2463,8 @@ export default function App() {
     const currentIntention = enemyIntention || 'attack';
     const currentIntentionVal = enemyIntentionValue;
 
-    setEnemyRolling(true); // Lock player inputs during animation
+    setEnemyRolling(true);
+    setHoveredCardId(null); // Lock player inputs during animation
 
     // ── Death Mark: penalize player if they dealt < 20 damage this turn ──
     let adjustedPlayerHP = currentPlayerHP;
@@ -2478,7 +2606,6 @@ export default function App() {
     enemyAnims.current.clear();
     setDyingEnemyIds(new Set());
     setFloatingDamages([]);
-    projectileOpacity.setValue(0);
     triggerCardDraw(initialHand);
     setDeck(remainingDeck);
     setHand(initialHand);
@@ -2506,6 +2633,9 @@ export default function App() {
         shield:    chaosModifier?.id === 'ironSkin' ? Math.floor(hp * 0.3) : 0,
         icon:      iconPicks[i],
         intention: 'attack',
+        gifType:   pickMinionType(currentLevel),
+        gifAnim:   'idle',
+        gifKey:    0,
       }));
       // Sudden Death: all enemies start at 30% HP
       if (chaosModifier?.id === 'suddenDeath') {
@@ -2523,9 +2653,9 @@ export default function App() {
     setLockedCards([]);
     setStatusEffects({ shield: false, rage: { active: false, turnsLeft: 0 }, curse: { active: false } });
     setEnemyTurnCount(0);
-    setEnemyDice([]);
+    setEnemyDice([null, null, null]);
     setEnemyRollStatus(null);
-    setShowingEnemyRoll(false);
+    setShowingEnemyRoll(true);
     setEnemyRolling(false);
     setMiniBossSelectedAbilities([]);
     setBossSelectedAbilities([]);
@@ -2769,9 +2899,9 @@ export default function App() {
     setStatusEffects({ shield: false, rage: { active: false, turnsLeft: 0 }, curse: { active: false } });
     setLockedCards([]);
     setEnemyTurnCount(0);
-    setEnemyDice([]);
+    setEnemyDice([null, null, null]);
     setEnemyRollStatus(null);
-    setShowingEnemyRoll(false);
+    setShowingEnemyRoll(true);
     setEnemyRolling(false);
     setMiniBossSelectedAbilities([]);
     setBossSelectedAbilities([]);
@@ -2805,8 +2935,15 @@ export default function App() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <SafeAreaView style={s.root}>
+    <SafeAreaView style={{ width: winW, height: winH, overflow: 'hidden', backgroundColor: C.bg }}>
       <StatusBar translucent />
+      {/* ── Scale wrapper: everything scales from top-left with screen size ── */}
+      <View style={{
+        width: winW / charScale,
+        height: winH / charScale,
+        transformOrigin: [0, 0],
+        transform: [{ scale: charScale }],
+      }}>
 
       {/* ── Enemy HP bar ── */}
       <View style={s.enemyBar}>
@@ -2823,6 +2960,24 @@ export default function App() {
               <Text style={s.chaosBadgeText}>{chaosModifier.icon} {chaosModifier.name}</Text>
             </TouchableOpacity>
           )}
+          {/* 💎 Runes + 💰 Bribe — grouped together as currency/bribe pair */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 }}>
+            <Text style={[s.runesBadge, { marginLeft: 0 }]}>💎 {runRunes}</Text>
+            {(() => {
+              const minBribe = getMinBribeAmount(encounterType);
+              const bribeDisabled = enemyRolling || phase !== 'player' || bribeUsed || runRunes < minBribe || chaosModifier?.id === 'goldCurse' || encounterType === 'boss';
+              return (
+                <TouchableOpacity
+                  style={[s.bribeGameBtn, bribeDisabled && { opacity: 0.3 }]}
+                  onPress={() => !bribeDisabled && setShowBribeScreen(true)}
+                  disabled={bribeDisabled}
+                  activeOpacity={0.8}
+                >
+                  <Text style={s.bribeGameBtnText}>💰</Text>
+                </TouchableOpacity>
+              );
+            })()}
+          </View>
           <Text style={s.enemyName}>
             {enemies.length > 0
               ? `Enemies: ${enemies.filter(e => e.hp > 0).length}/${enemies.length}`
@@ -2831,39 +2986,9 @@ export default function App() {
           </Text>
         </View>
 
-        {enemies.length > 0 ? (
-          // ── Multi-enemy: show selected enemy HP ──
-          <View style={s.hpRow}>
-            <Text style={s.hpLabel}>
-              {enemies[selectedEnemyIdx]?.hp ?? 0}/{enemies[selectedEnemyIdx]?.maxHp ?? 0}
-            </Text>
-            <HpBar
-              current={enemies[selectedEnemyIdx]?.hp ?? 0}
-              max={enemies[selectedEnemyIdx]?.maxHp ?? 1}
-              color={C.red}
-            />
-            {enemies[selectedEnemyIdx]?.shield > 0 && (
-              <Text style={s.shieldBadge}>🛡️ {enemies[selectedEnemyIdx].shield}</Text>
-            )}
-          </View>
-        ) : chaosModifier?.id === 'blind' ? (
-          <View style={s.hpRow}>
-            <Text style={s.hpLabel}>???</Text>
-            <View style={s.hpTrack}><View style={[s.hpFill, { width: '100%', backgroundColor: '#444' }]} /></View>
-          </View>
-        ) : (
-          <View style={s.hpRow}>
-            <Text style={s.hpLabel}>{enemyHP}/{enemyMaxHP}</Text>
-            <HpBar current={enemyHP} max={enemyMaxHP} color={C.red} />
-          </View>
-        )}
-
-        {/* ── Enemy shield bar (single-enemy only) ── */}
+        {/* ── Enemy shield (single-enemy only) ── */}
         {enemies.length === 0 && enemyShield > 0 && (
-          <View style={s.enemyShieldRow}>
-            <Text style={s.enemyShieldLabel}>🛡️ {enemyShield}</Text>
-            <HpBar current={enemyShield} max={enemyShield} color={C.blue} />
-          </View>
+          <Text style={s.enemyShieldLabel}>🛡️ Shield: {enemyShield}</Text>
         )}
 
         {/* ── DoT badge (single-enemy only) ── */}
@@ -2913,16 +3038,83 @@ export default function App() {
         )}
       </View>
 
+      {/* ── Content below top bar (background lives here) ── */}
+      <View
+        style={{ flex: 1 }}
+        onLayout={(e) => {
+          const { width, height } = e.nativeEvent.layout;
+          setBgSize({ w: width, h: height });
+        }}
+      >
+        {currentLevel === 1 && (
+          <Image
+            source={require('./background/Level1.jpg')}
+            style={{ position: 'absolute', top: 0, left: 0, width: bgSize.w, height: bgSize.h }}
+            resizeMode="stretch"
+            pointerEvents="none"
+          />
+        )}
+
       {/* ── Battlefield ── */}
       <Animated.View style={[s.battlefield, { transform: [{ translateX: shakeAnim }] }]}>
 
         {/* ── LEFT: Player character ── */}
         <View style={s.playerSide}>
-          <Image
-            source={require('./player_character.png')}
-            style={s.playerCharacterImg}
-            resizeMode="contain"
-          />
+          <View style={{ position: 'relative' }}>
+            <Image
+              key={playerAnimKey}
+              source={PLAYER_GIFS[phase === 'lose' ? 'dying' : playerAnim]}
+              style={s.playerCharacterImg}
+              resizeMode="contain"
+            />
+            {/* Floating damage numbers over player */}
+            {floatingDamages.map(fd => (
+              <Animated.Text
+                key={fd.id}
+                pointerEvents="none"
+                style={{
+                  position: 'absolute',
+                  alignSelf: 'center',
+                  top: '30%',
+                  color: '#FF4444',
+                  fontSize: 28,
+                  fontWeight: 'bold',
+                  opacity: fd.opacity,
+                  transform: [{ translateY: fd.y }],
+                  zIndex: 20,
+                  textShadowColor: '#000',
+                  textShadowOffset: { width: 1, height: 1 },
+                  textShadowRadius: 4,
+                }}
+              >
+                -{fd.value}
+              </Animated.Text>
+            ))}
+            {/* Slash overlay on player when hit */}
+            <Animated.View
+              pointerEvents="none"
+              style={{
+                position: 'absolute',
+                top: 0, left: 0, right: 0, bottom: 0,
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: playerSlashOpacity,
+                transform: [{ scale: playerSlashScale }],
+              }}
+            >
+              <View style={{ width: 80, height: 80, alignItems: 'center', justifyContent: 'center' }}>
+                <View style={{ position: 'absolute', width: 70, height: 5, backgroundColor: '#FF3333', borderRadius: 3, transform: [{ rotate: '45deg' }] }} />
+                <View style={{ position: 'absolute', width: 70, height: 5, backgroundColor: '#FF3333', borderRadius: 3, transform: [{ rotate: '-45deg' }] }} />
+              </View>
+            </Animated.View>
+          </View>
+          {shield > 0 && (
+            <View style={{ position: 'absolute', bottom: 28, right: -8, backgroundColor: 'rgba(91,200,232,0.2)', borderRadius: 10, borderWidth: 1, borderColor: '#5BC8E8', paddingHorizontal: 6, paddingVertical: 2, zIndex: 10 }}>
+              <Text style={{ color: '#5BC8E8', fontSize: 11, fontWeight: 'bold' }}>🛡️ {shield}</Text>
+            </View>
+          )}
+          <CharacterHpBar current={playerHP} max={playerMaxHp} barWidth={130} />
+          {bossSouls > 0 && <Text style={s.soulsBadge}>💠 {bossSouls}</Text>}
           <Text style={s.avatarLabel}>You</Text>
         </View>
 
@@ -2940,47 +3132,77 @@ export default function App() {
                 const iconSize = numAlive > 3 ? 20 : 28;
                 const ea = getEnemyAnims(enemy.id);
                 return (
-                  <Animated.View
+                  <View
                     key={enemy.id}
-                    style={{
-                      transform: [{ translateY: ea.lunge }],
-                      opacity: ea.deathOpacity,
-                    }}
+                    style={{ position: 'relative' }}
                   >
-                    {/* Red glow overlay on lunge */}
+                    {/* Floating damage numbers over enemy */}
+                    {enemyFloatingDamages.filter(fd => fd.enemyId === enemy.id).map(fd => (
+                      <Animated.Text
+                        key={fd.id}
+                        pointerEvents="none"
+                        style={{
+                          position: 'absolute',
+                          alignSelf: 'center',
+                          top: '20%',
+                          color: '#FF4444',
+                          fontSize: 22,
+                          fontWeight: 'bold',
+                          opacity: fd.opacity,
+                          transform: [{ translateY: fd.y }],
+                          zIndex: 30,
+                          textShadowColor: '#000',
+                          textShadowOffset: { width: 1, height: 1 },
+                          textShadowRadius: 3,
+                        }}
+                      >
+                        -{fd.value}
+                      </Animated.Text>
+                    ))}
+                    {/* Slash overlay on enemy when hit by player */}
                     <Animated.View
                       pointerEvents="none"
                       style={[StyleSheet.absoluteFill, {
-                        backgroundColor: '#FF2222',
-                        opacity: ea.glowOpacity,
+                        alignItems: 'center',
+                        justifyContent: 'center',
                         borderRadius: 10,
-                        zIndex: 5,
+                        zIndex: 7,
+                        opacity: ea.slashOpacity,
+                        transform: [{ scale: ea.slashScale }],
                       }]}
-                    />
-                    {/* White flash overlay on death */}
-                    <Animated.View
-                      pointerEvents="none"
-                      style={[StyleSheet.absoluteFill, {
-                        backgroundColor: '#FFFFFF',
-                        opacity: ea.deathFlash,
-                        borderRadius: 10,
-                        zIndex: 6,
-                      }]}
-                    />
+                    >
+                      <View style={{ width: 50, height: 50, alignItems: 'center', justifyContent: 'center' }}>
+                        <View style={{ position: 'absolute', width: 44, height: 4, backgroundColor: '#FFD700', borderRadius: 2, transform: [{ rotate: '45deg' }] }} />
+                        <View style={{ position: 'absolute', width: 44, height: 4, backgroundColor: '#FFD700', borderRadius: 2, transform: [{ rotate: '-45deg' }] }} />
+                      </View>
+                    </Animated.View>
                     <TouchableOpacity
                       style={[s.multiEnemyCard, isSelected && s.multiEnemyCardSelected]}
                       onPress={() => !enemyRolling && setSelectedEnemyIdx(idx)}
                       activeOpacity={0.8}
                     >
                       {isSelected && <Text style={s.multiEnemyTargetIcon}>🎯</Text>}
-                      <Text style={{ fontSize: iconSize }}>{enemy.icon}</Text>
-                      <Text style={s.multiEnemyHP}>{enemy.hp}</Text>
-                      {enemy.shield > 0 && <Text style={s.multiEnemyShieldText}>🛡️{enemy.shield}</Text>}
+                      {MINION_GIFS[currentLevel] && enemy.gifType ? (
+                        <Image
+                          key={enemy.gifKey}
+                          source={MINION_GIFS[currentLevel][enemy.gifType][enemy.gifAnim || 'idle']}
+                          style={{ width: numAlive > 3 ? (IS_PC ? 100 : 48) : (IS_PC ? 130 : 64), height: numAlive > 3 ? (IS_PC ? 100 : 48) : (IS_PC ? 130 : 64) }}
+                          resizeMode="contain"
+                        />
+                      ) : (
+                        <Text style={{ fontSize: iconSize }}>{enemy.icon}</Text>
+                      )}
                       <Text style={s.multiEnemyIntention}>
                         {enemy.intention === 'attack' ? '⚔️' : '🛡️'} {enemy.damage}
                       </Text>
                     </TouchableOpacity>
-                  </Animated.View>
+                    {enemy.shield > 0 && (
+                      <View style={{ position: 'absolute', bottom: 28, right: -6, backgroundColor: 'rgba(91,200,232,0.2)', borderRadius: 8, borderWidth: 1, borderColor: '#5BC8E8', paddingHorizontal: 4, paddingVertical: 2, zIndex: 10 }}>
+                        <Text style={{ color: '#5BC8E8', fontSize: 9, fontWeight: 'bold' }}>🛡️ {enemy.shield}</Text>
+                      </View>
+                    )}
+                    <CharacterHpBar current={enemy.hp} max={enemy.maxHp} barWidth={numAlive > 3 ? 56 : 70} />
+                  </View>
                 );
               })}
             </View>
@@ -2989,7 +3211,15 @@ export default function App() {
             <>
               <View style={s.enemyAvatarRow}>
                 <View style={[s.avatarWrap, enragedTurns > 0 && s.avatarWrapEnraged]}>
-                  <Text style={s.avatar}>👹</Text>
+                  {currentLevel === 1 && encounterType === 'boss' ? (
+                    <Image
+                      source={require('./boss_level1.png')}
+                      style={{ width: 160, height: 190 }}
+                      resizeMode="contain"
+                    />
+                  ) : (
+                    <Text style={s.avatar}>👹</Text>
+                  )}
                 </View>
                 {enemyIntention && chaosModifier?.id !== 'blind' && (
                   <TouchableOpacity
@@ -3019,69 +3249,72 @@ export default function App() {
                 )}
               </View>
               <Text style={s.avatarLabel}>{ENEMY_NAME}</Text>
+              {chaosModifier?.id !== 'blind' ? (
+                <CharacterHpBar current={enemyHP} max={enemyMaxHP} barWidth={140} />
+              ) : (
+                <Text style={{ color: C.muted, fontSize: 11 }}>??? HP</Text>
+              )}
             </>
           )}
 
-          {/* Enemy dice roll display */}
-          {showingEnemyRoll && (
-            <TouchableOpacity
-              style={s.enemyRollSection}
-              activeOpacity={0.75}
-              disabled={enemyRolling}
-              onPress={() => setSelectedAbilityInfo(
-                enemyDiceSum <= 6
-                  ? { icon: '💨', name: 'Miss', desc: "the enemy's attack fails completely" }
-                  : enemyDiceSum >= 15
-                  ? { icon: '💥', name: 'Critical Hit', desc: 'double damage dealt!' }
-                  : { icon: '⚔️', name: 'Normal Hit', desc: 'standard damage applied' }
-              )}
-            >
-              <Text style={s.enemyRollLabel}>Enemy Roll</Text>
-              <View style={s.enemyDiceRow}>
-                {enemyDice.map((val, i) => (
-                  <EnemyDieDisplay
-                    key={i}
-                    val={val}
-                    rotation={enemyDiceRotation}
-                    isAnimating={enemyRolling}
-                  />
-                ))}
-              </View>
-              <View style={s.enemyRollResult}>
-                <Text style={s.enemyDiceSum}>{enemyDiceSum}</Text>
-                {enemyRollStatus && (
-                  <Text style={[s.enemyRollStatus, { color: enemyRollStatus.color }]}>
-                    {enemyRollStatus.label}
-                  </Text>
-                )}
-              </View>
-            </TouchableOpacity>
-          )}
-
-          {/* ── Projectile orb: flies from enemy left-edge → player ── */}
-          {enemies.length > 0 && (
-            <Animated.View
-              pointerEvents="none"
-              style={{
-                position: 'absolute',
-                left: 0,
-                top: '40%',
-                width: 14,
-                height: 14,
-                borderRadius: 7,
-                backgroundColor: '#FF3333',
-                shadowColor: '#FF3333',
-                shadowOpacity: 0.9,
-                shadowRadius: 6,
-                elevation: 8,
-                opacity: projectileOpacity,
-                transform: [{ translateX: projectileY }],
-              }}
-            />
-          )}
 
         </View>
       </Animated.View>
+
+      {/* ── Controls row: player dice | enemy dice | buttons ── */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 6 }}>
+        {/* Left: dice */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Text style={s.rollsLeft}>Rolls: {rollsLeft}</Text>
+          {hasBuff('divineGrace') && !divineGraceUsed && (
+            <TouchableOpacity style={[s.divineBtn, enemyRolling && { opacity: 0.35 }]} onPress={handleDivineGrace} disabled={enemyRolling} activeOpacity={0.8}>
+              <Text style={s.divineBtnText}>🌟</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={[s.rollBtn, (rollsLeft === 0 || enemyRolling || dice.every(d => d.used)) && s.rollBtnOff]}
+            onPress={rollDice}
+            disabled={rollsLeft === 0 || enemyRolling || dice.every(d => d.used)}
+            activeOpacity={0.8}
+          >
+            <Text style={s.rollBtnText}>ROLL</Text>
+          </TouchableOpacity>
+          <View style={s.diceRow}>
+            {dice.map((die, i) => (
+              <Die key={i} die={die} rotation={diceRotations[i]} isAnimating={diceAnimating[i]} />
+            ))}
+          </View>
+        </View>
+        {/* Center: Enemy dice — HIDDEN, will be re-enabled later */}
+
+        {/* Right: End Turn + Kill */}
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <TouchableOpacity
+            style={[s.endTurnBtn, { flex: 0, paddingHorizontal: 16, minWidth: 120 }, enemyRolling && { opacity: 0.35 }]}
+            onPress={() => !enemyRolling && triggerEnemyTurn()}
+            disabled={enemyRolling}
+            activeOpacity={0.8}
+          >
+            <Text style={s.endTurnText} numberOfLines={1}>End Turn</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={s.debugKillBtn}
+            onPress={() => {
+              const runesBase = 10 + (encounterType === 'miniBoss' ? 20 : 0) + (encounterType === 'boss' ? 50 : 0);
+              const earnedRunes = (chaosModifier?.id === 'goldCurse' && encounterType === 'regular') ? 0 : runesBase;
+              if (earnedRunes > 0) { setRunRunes(prev => prev + earnedRunes); setLevelRunesEarned(prev => prev + earnedRunes); setTotalRunesEarned(prev => prev + earnedRunes); }
+              setLevelCombatCount(prev => prev + 1); setEnemyHP(0); setCombatCount(prev => prev + 1);
+              if (enemies.length > 0) { setEnemies(prev => prev.map(e => ({ ...e, hp: 0 }))); setPhase('cardReward'); }
+              else if (encounterType === 'boss' && currentLevel === 10) { setScreen('runComplete'); }
+              else if (encounterType === 'boss') { const soulsEarned = 1 + (activeBuffs.some(b => b.id === 'soulFinder') ? 1 : 0); setBossSouls(prev => prev + soulsEarned); setShowBuffShop(true); }
+              else { setPhase('cardReward'); }
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={s.debugKillText}>☠ Kill</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
 
       {/* ── Message ── */}
       <View style={s.messageRow}>
@@ -3090,46 +3323,6 @@ export default function App() {
 
       {/* ── Player HP bar ── */}
       <View style={s.playerBar}>
-        {/* HP flash overlay */}
-        <Animated.View
-          pointerEvents="none"
-          style={[StyleSheet.absoluteFill, {
-            backgroundColor: '#FF1111',
-            opacity: playerHitFlash,
-            borderRadius: 8,
-            zIndex: 10,
-          }]}
-        />
-        {/* Floating damage numbers */}
-        {floatingDamages.map(fd => (
-          <Animated.Text
-            key={fd.id}
-            pointerEvents="none"
-            style={{
-              position: 'absolute',
-              alignSelf: 'center',
-              top: -4,
-              color: '#FF4444',
-              fontSize: 22,
-              fontWeight: 'bold',
-              opacity: fd.opacity,
-              transform: [{ translateY: fd.y }],
-              zIndex: 20,
-              textShadowColor: '#000',
-              textShadowOffset: { width: 1, height: 1 },
-              textShadowRadius: 3,
-            }}
-          >
-            -{fd.value}
-          </Animated.Text>
-        ))}
-        <View style={s.hpRow}>
-          <Text style={s.hpLabel}>{playerHP}/{playerMaxHp}</Text>
-          <HpBar current={playerHP} max={playerMaxHp} color={C.green} />
-          {shield > 0 && <Text style={s.shieldBadge}>🛡️ {shield}</Text>}
-          {runRunes > 0 && <Text style={s.runesBadge}>💎 {runRunes}</Text>}
-          {bossSouls > 0 && <Text style={s.soulsBadge}>💠 {bossSouls}</Text>}
-        </View>
         {/* ── Active buffs row ── */}
         {activeBuffs.length > 0 && (
           <View style={s.activeBuffsRow}>
@@ -3147,58 +3340,78 @@ export default function App() {
         )}
       </View>
 
-      {/* ── Dice + Roll ── */}
-      <View style={s.diceSection}>
-        <View style={s.diceRow}>
-          {dice.map((die, i) => (
-            <Die
-              key={i}
-              die={die}
-              rotation={diceRotations[i]}
-              isAnimating={diceAnimating[i]}
-            />
-          ))}
-        </View>
 
-        <View style={s.rollControls}>
-          <Text style={s.rollsLeft}>Rolls left: {rollsLeft}</Text>
-          <TouchableOpacity
-            style={[s.rollBtn, (rollsLeft === 0 || enemyRolling || dice.every(d => d.used)) && s.rollBtnOff]}
-            onPress={rollDice}
-            disabled={rollsLeft === 0 || enemyRolling || dice.every(d => d.used)}
-            activeOpacity={0.8}
+      {/* ── Card hover preview (PC only) ── */}
+      {hoveredCardId && (() => {
+        const inst = cardCollection.find(c => c.instanceId === hoveredCardId);
+        const hcard = inst ? CARD_MAP[inst.id] : null;
+        if (!hcard) return null;
+        const playable = hcard.canPlay(dice) && !enemyRolling;
+        const rarityColor = RARITY_COLOR[hcard.rarity] || '#3A3A5A';
+        return (
+          <View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              bottom: 175,
+              alignSelf: 'center',
+              width: 190,
+              backgroundColor: '#0A1628',
+              borderRadius: 16,
+              borderWidth: 2.5,
+              borderColor: playable ? rarityColor : '#333',
+              padding: 16,
+              alignItems: 'center',
+              gap: 10,
+              zIndex: 500,
+              shadowColor: playable ? rarityColor : '#000',
+              shadowOpacity: 0.8,
+              shadowRadius: 20,
+              elevation: 30,
+            }}
           >
-            <Text style={s.rollBtnText}>ROLL</Text>
-          </TouchableOpacity>
-          {hasBuff('divineGrace') && !divineGraceUsed && (
-            <TouchableOpacity
-              style={[s.divineBtn, enemyRolling && { opacity: 0.35 }]}
-              onPress={handleDivineGrace}
-              disabled={enemyRolling}
-              activeOpacity={0.8}
-            >
-              <Text style={s.divineBtnText}>🌟</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
+            <Text style={{ fontSize: 52 }}>{hcard.icon}</Text>
+            <Text style={{ color: '#FFF', fontSize: 15, fontWeight: 'bold', textAlign: 'center', letterSpacing: 0.5 }}>{hcard.name}</Text>
+            <View style={{ backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 3, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
+              <Text style={{ color: '#AAA', fontSize: 11, fontWeight: 'bold' }}>{hcard.req}</Text>
+            </View>
+            <Text style={{ color: '#CCC', fontSize: 12, textAlign: 'center', lineHeight: 18 }}>{hcard.desc}</Text>
+          </View>
+        );
+      })()}
 
       {/* ── Cards ── */}
       <View style={s.cardsRow}>
-        {hand.map((instId) => {
+        {hand.map((instId, idx) => {
           const inst = cardCollection.find((c) => c.instanceId === instId);
           const card = inst ? CARD_MAP[inst.id] : null;
           const isLocked = lockedCards.includes(instId);
           const drawAnim = cardDrawAnims.current.get(instId) ?? cardZeroAnim;
+          const n = hand.length;
+          const mid = (n - 1) / 2;
+          const offset = idx - mid;
+          const rotateDeg = offset * 5;
+          const arcY = Math.abs(offset) * 7;
+          const isHovered = hoveredCardId === instId;
           return card ? (
             <Animated.View
               key={instId}
-              style={{ flex: 1, transform: [{ translateY: drawAnim }] }}
+              onMouseEnter={() => setHoveredCardId(instId)}
+              onMouseLeave={() => setHoveredCardId(null)}
+              style={{
+                transform: [
+                  { translateY: drawAnim },
+                  { translateY: isHovered ? arcY - 16 : arcY },
+                  { rotate: isHovered ? '0deg' : `${rotateDeg}deg` },
+                  { scale: isHovered ? 1.08 : 1 },
+                ],
+                zIndex: isHovered ? 100 : idx,
+              }}
             >
               <CardView
                 card={card}
                 dice={dice}
-                onPlay={enemyRolling || isLocked ? () => {} : () => playCard(card, instId)}
+                onPlay={enemyRolling || isLocked ? () => {} : () => { setHoveredCardId(null); playCard(card, instId); }}
                 disabled={enemyRolling || isLocked}
                 isLocked={isLocked}
               />
@@ -3207,70 +3420,6 @@ export default function App() {
         })}
       </View>
 
-      {/* ── End Turn + Bribe + Debug Kill ── */}
-      <View style={s.bottomRow}>
-        <TouchableOpacity
-          style={[s.endTurnBtn, enemyRolling && { opacity: 0.35 }]}
-          onPress={() => !enemyRolling && triggerEnemyTurn()}
-          disabled={enemyRolling}
-          activeOpacity={0.8}
-        >
-          <Text style={s.endTurnText}>End Turn</Text>
-        </TouchableOpacity>
-
-        {/* 💰 Bribe button */}
-        {(() => {
-          const minBribe = getMinBribeAmount(encounterType);
-          const bribeDisabled =
-            enemyRolling ||
-            phase !== 'player' ||
-            bribeUsed ||
-            runRunes < minBribe ||
-            chaosModifier?.id === 'goldCurse' ||
-            encounterType === 'boss';
-          return (
-            <TouchableOpacity
-              style={[s.bribeGameBtn, bribeDisabled && { opacity: 0.3 }]}
-              onPress={() => !bribeDisabled && setShowBribeScreen(true)}
-              disabled={bribeDisabled}
-              activeOpacity={0.8}
-            >
-              <Text style={s.bribeGameBtnText}>💰</Text>
-            </TouchableOpacity>
-          );
-        })()}
-
-        <TouchableOpacity
-          style={s.debugKillBtn}
-          onPress={() => {
-            const runesBase = 10 + (encounterType === 'miniBoss' ? 20 : 0) + (encounterType === 'boss' ? 50 : 0);
-            const earnedRunes = (chaosModifier?.id === 'goldCurse' && encounterType === 'regular') ? 0 : runesBase;
-            if (earnedRunes > 0) {
-              setRunRunes(prev => prev + earnedRunes);
-              setLevelRunesEarned(prev => prev + earnedRunes);
-              setTotalRunesEarned(prev => prev + earnedRunes);
-            }
-            setLevelCombatCount(prev => prev + 1);
-            setEnemyHP(0);
-            setCombatCount(prev => prev + 1);
-            if (enemies.length > 0) {
-              setEnemies(prev => prev.map(e => ({ ...e, hp: 0 })));
-              setPhase('cardReward');
-            } else if (encounterType === 'boss' && currentLevel === 10) {
-              setScreen('runComplete');
-            } else if (encounterType === 'boss') {
-              const soulsEarned = 1 + (activeBuffs.some(b => b.id === 'soulFinder') ? 1 : 0);
-              setBossSouls(prev => prev + soulsEarned);
-              setShowBuffShop(true);
-            } else {
-              setPhase('cardReward');
-            }
-          }}
-          activeOpacity={0.8}
-        >
-          <Text style={s.debugKillText}>☠ Kill</Text>
-        </TouchableOpacity>
-      </View>
 
       {/* ── Buff shop overlay ── */}
       {showBuffShop && !showDropBuff && (
@@ -3644,16 +3793,20 @@ export default function App() {
           </TouchableOpacity>
         </View>
       )}
+      </View>{/* end content-below-top-bar wrapper */}
+      </View>{/* end scale wrapper */}
     </SafeAreaView>
   );
 }
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
-const s = StyleSheet.create({
+const mobileStyles = StyleSheet.create({
   root: {
-    flex: 1,
+    width: SCREEN_W,
+    height: SCREEN_H,
     backgroundColor: C.bg,
+    overflow: 'hidden',
     paddingTop: RNStatusBar.currentHeight || 0,
   },
 
@@ -3868,15 +4021,15 @@ const s = StyleSheet.create({
   battlefield: {
     flex: 1,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     justifyContent: 'space-evenly',
     paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingBottom: 12,
   },
   playerSide: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-end',
     gap: 4,
   },
   enemySide: {
@@ -3886,8 +4039,8 @@ const s = StyleSheet.create({
     gap: 6,
   },
   playerCharacterImg: {
-    width: 140,
-    height: 170,
+    width: Math.round(140 * CHAR_SCALE),
+    height: Math.round(170 * CHAR_SCALE),
   },
   avatarBox: {
     alignItems: 'center',
@@ -3933,12 +4086,10 @@ const s = StyleSheet.create({
 
   // Dice
   diceSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'column',
     paddingHorizontal: 16,
-    paddingBottom: 6,
-    marginBottom: 10,
-    gap: 12,
+    paddingBottom: 4,
+    marginBottom: 4,
   },
   diceRow: {
     flexDirection: 'row',
@@ -4051,19 +4202,20 @@ const s = StyleSheet.create({
   // Cards
   cardsRow: {
     flexDirection: 'row',
-    paddingHorizontal: 8,
-    gap: 6,
-    paddingBottom: 4,
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+    paddingBottom: 0,
     overflow: 'visible',
+    gap: 4,
   },
   card: {
-    flex: 1,
+    width: 72,
     borderWidth: 1.5,
     borderRadius: 10,
     padding: 6,
     alignItems: 'center',
     gap: 2,
-    minHeight: 96,
+    minHeight: 100,
     justifyContent: 'space-between',
   },
   cardOn: {
@@ -4464,22 +4616,10 @@ const s = StyleSheet.create({
   multiEnemyCard: {
     alignItems: 'center',
     justifyContent: 'flex-end',
-    backgroundColor: '#16213E',
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: '#3A3A5A',
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    minWidth: 52,
     gap: 3,
   },
   multiEnemyCardSelected: {
-    borderColor: '#E2B04A',
-    backgroundColor: '#1A2A4A',
-    shadowColor: '#E2B04A',
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
-    elevation: 4,
+    // selection shown by 🎯 icon only
   },
   multiEnemyTargetIcon: {
     fontSize: 12,
@@ -4530,3 +4670,879 @@ const s = StyleSheet.create({
     textAlign: 'center',
   },
 });
+
+// ─── PC Styles (width ≥ 768) ─────────────────────────────────────────────────
+
+const pcStyles = StyleSheet.create({
+  root: {
+    width: SCREEN_W,
+    height: SCREEN_H,
+    backgroundColor: C.bg,
+    overflow: 'hidden',
+    paddingTop: RNStatusBar.currentHeight || 0,
+  },
+
+  // Enemy bar
+  enemyBar: {
+    backgroundColor: C.surface,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  enemyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  combatNumber: {
+    color: C.gold,
+    fontSize: 11,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  enemyName: {
+    color: C.red,
+    fontSize: 13,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
+  bossAbilitiesPreview: {
+    color: C.gold,
+    fontSize: 10,
+    marginBottom: 4,
+    fontWeight: 'bold',
+  },
+  // Intention display
+  enemyAvatarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  intentionBox: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  intentionIcon: {
+    fontSize: 18,
+  },
+  intentionValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+
+  // Enemy shield
+  enemyShieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+  },
+  enemyShieldLabel: {
+    color: C.blue,
+    fontSize: 11,
+    fontWeight: 'bold',
+    width: 52,
+  },
+
+  // Active ability badges
+  activeBadgesRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 4,
+    flexWrap: 'wrap',
+  },
+  activeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(170,0,255,0.2)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#AA00FF',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    gap: 3,
+  },
+  activeBadgeIcon: {
+    fontSize: 14,
+  },
+  activeBadgeTurns: {
+    color: '#AA00FF',
+    fontSize: 11,
+    fontWeight: 'bold',
+  },
+
+  abilitiesRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  abilityEmoji: {
+    fontSize: 22,
+  },
+  abilityModalOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  abilityModalBox: {
+    backgroundColor: C.surface,
+    borderWidth: 2,
+    borderColor: C.gold,
+    borderRadius: 14,
+    paddingHorizontal: 24,
+    paddingVertical: 20,
+    alignItems: 'center',
+    gap: 12,
+    width: '75%',
+  },
+  abilityModalIcon: {
+    fontSize: 40,
+  },
+  abilityModalName: {
+    color: C.gold,
+    fontSize: 16,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  abilityModalDesc: {
+    color: C.text,
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+  abilityModalHint: {
+    color: C.muted,
+    fontSize: 10,
+    marginTop: 8,
+  },
+  hpRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  hpLabel: {
+    color: C.muted,
+    fontSize: 11,
+    width: 52,
+  },
+  hpTrack: {
+    flex: 1,
+    height: 10,
+    backgroundColor: '#2A2A2A',
+    borderRadius: 5,
+    overflow: 'hidden',
+  },
+  hpFill: {
+    height: '100%',
+    borderRadius: 5,
+  },
+  shieldBadge: {
+    color: C.blue,
+    fontSize: 12,
+    marginLeft: 4,
+  },
+  runesBadge: {
+    color: '#27AE60',
+    fontSize: 12,
+    marginLeft: 4,
+  },
+  soulsBadge: {
+    color: '#5BC8E8',
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginLeft: 4,
+  },
+  activeBuffsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 4,
+  },
+  activeBuffIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 6,
+    borderWidth: 2,
+    backgroundColor: '#16213E',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  activeBuffEmoji: {
+    fontSize: 16,
+  },
+  divineBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: '#E2B04A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 6,
+  },
+  divineBtnText: {
+    fontSize: 20,
+  },
+
+  // Battlefield
+  battlefield: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-evenly',
+    paddingHorizontal: 8,
+    paddingBottom: 12,
+  },
+  playerSide: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+  },
+  enemySide: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  playerCharacterImg: {
+    width: Math.round(150 * CHAR_SCALE),
+    height: Math.round(180 * CHAR_SCALE),
+  },
+  avatarBox: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  avatar: {
+    fontSize: 52,
+  },
+  avatarLabel: {
+    color: C.muted,
+    fontSize: 11,
+    letterSpacing: 1,
+  },
+  divider: {
+    width: '70%',
+    height: 1,
+    backgroundColor: C.purple,
+    opacity: 0.35,
+  },
+
+  // Message
+  messageRow: {
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    alignItems: 'center',
+    minHeight: 34,
+    position: 'relative',
+    top: -15,
+  },
+  messageText: {
+    color: C.gold,
+    fontSize: 13,
+    textAlign: 'center',
+  },
+
+  // Player bar
+  playerBar: {
+    paddingHorizontal: 16,
+    paddingBottom: 2,
+    position: 'relative',
+    top: -15,
+  },
+
+  // Dice
+  diceSection: {
+    flexDirection: 'column',
+    paddingHorizontal: 16,
+    paddingBottom: 4,
+    marginBottom: 4,
+  },
+  diceRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  die: {
+    width: 48,
+    height: 48,
+    borderRadius: 9,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dieEmpty: {
+    backgroundColor: '#1A1A3A',
+    borderColor: '#3A3A5A',
+  },
+  dieRolled: {
+    backgroundColor: C.primary,
+    borderColor: C.purple,
+  },
+  dieUsed: {
+    backgroundColor: '#111',
+    borderColor: '#2A2A2A',
+    opacity: 0.35,
+  },
+  dieIcon: {
+    fontSize: 20,
+  },
+  dieText: {
+    color: C.text,
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+
+  // Enemy dice roll
+  enemyRollSection: {
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+  },
+  enemyRollLabel: {
+    color: C.muted,
+    fontSize: 10,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  enemyDiceRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  enemyDie: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: C.red,
+    backgroundColor: C.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  enemyDieText: {
+    color: C.text,
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  enemyRollResult: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  enemyDiceSum: {
+    color: C.gold,
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  enemyRollStatus: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+
+  rollControls: {
+    flex: 1,
+    alignItems: 'flex-end',
+    justifyContent: 'flex-end',
+    height: 48,
+    gap: 4,
+  },
+  rollsLeft: {
+    color: C.muted,
+    fontSize: 12,
+  },
+  rollBtn: {
+    backgroundColor: C.purple,
+    paddingHorizontal: 22,
+    paddingVertical: 11,
+    borderRadius: 8,
+  },
+  rollBtnOff: {
+    opacity: 0.3,
+  },
+  rollBtnText: {
+    color: C.text,
+    fontWeight: 'bold',
+    fontSize: 15,
+    letterSpacing: 1,
+  },
+
+  // Cards
+  cardsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+    paddingBottom: 8,
+    overflow: 'visible',
+    gap: 6,
+  },
+  card: {
+    width: 72,
+    borderWidth: 1.5,
+    borderRadius: 10,
+    padding: 8,
+    alignItems: 'center',
+    gap: 3,
+    minHeight: 130,
+    justifyContent: 'space-between',
+  },
+  cardOn: {
+    backgroundColor: C.primary,
+  },
+  cardOff: {
+    backgroundColor: '#0D0D1A',
+    opacity: 0.55,
+  },
+  cardIcon: {
+    fontSize: 20,
+  },
+  cardName: {
+    color: C.text,
+    fontSize: 10,
+    fontWeight: 'bold',
+    textAlign: 'center',
+  },
+  cardDesc: {
+    color: C.muted,
+    fontSize: 9,
+    textAlign: 'center',
+    lineHeight: 13,
+  },
+  cardReqBadge: {
+    backgroundColor: C.surface,
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    marginTop: 2,
+  },
+  cardReqText: {
+    color: C.purple,
+    fontSize: 8,
+    textAlign: 'center',
+  },
+  lockOverlay: {
+    backgroundColor: 'rgba(0,0,0,0.62)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#FF4444',
+  },
+  lockIcon: {
+    fontSize: 24,
+  },
+
+  // End Turn
+  bottomRow: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginBottom: 6,
+    gap: 8,
+  },
+  endTurnBtn: {
+    flex: 1,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: C.gold,
+    paddingVertical: 9,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  endTurnText: {
+    color: C.gold,
+    fontSize: 14,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  menuBtn: {
+    flex: 0.8,
+    backgroundColor: C.purple,
+    paddingVertical: 9,
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: C.gold,
+  },
+  menuBtnText: {
+    color: C.text,
+    fontSize: 14,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  debugKillBtn: {
+    backgroundColor: 'rgba(192,57,43,0.3)',
+    borderWidth: 1,
+    borderColor: C.red,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  debugKillText: {
+    color: C.red,
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+
+  // Weighted picker
+  weightedOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.88)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    zIndex: 999,
+    elevation: 999,
+  },
+  weightedTitle: {
+    color: '#E2B04A',
+    fontSize: 22,
+    fontWeight: 'bold',
+    letterSpacing: 2,
+  },
+  weightedSub: {
+    color: '#777',
+    fontSize: 14,
+  },
+  weightedRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  weightedBtn: {
+    width: 54,
+    height: 54,
+    borderRadius: 10,
+    backgroundColor: '#7B2FBE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  weightedBtnText: {
+    color: '#EFEFEF',
+    fontSize: 22,
+    fontWeight: 'bold',
+  },
+
+  // Overlays
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+  },
+  overlayTitle: {
+    color: C.gold,
+    fontSize: 38,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  overlaySub: {
+    color: C.text,
+    fontSize: 16,
+    textAlign: 'center',
+    paddingHorizontal: 40,
+    opacity: 0.8,
+  },
+  overlayRunes: {
+    color:       C.gold,
+    fontSize:    20,
+    fontWeight:  'bold',
+    letterSpacing: 1,
+    marginTop:   4,
+  },
+  retryBtn: {
+    backgroundColor: C.purple,
+    paddingHorizontal: 44,
+    paddingVertical: 14,
+    borderRadius: 10,
+    marginTop: 8,
+  },
+  retryText: {
+    color: C.text,
+    fontSize: 18,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+
+  // Main Menu
+  mainMenuContainer: {
+    backgroundColor: C.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  mainMenuTitle: {
+    color: C.gold,
+    fontSize: 48,
+    fontWeight: 'bold',
+    marginBottom: 60,
+    letterSpacing: 2,
+  },
+  mainMenuButtonsContainer: {
+    width: '100%',
+    gap: 14,
+  },
+  mainMenuBtn: {
+    backgroundColor: C.purple,
+    borderWidth: 2,
+    borderColor: C.gold,
+    paddingVertical: 18,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  mainMenuBtnDisabled: {
+    opacity: 0.4,
+  },
+  mainMenuBtnText: {
+    color: C.text,
+    fontSize: 16,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+
+  // Pre-Combat
+  preCombatContainer: {
+    backgroundColor: C.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  preCombatContent: {
+    alignItems: 'center',
+    gap: 40,
+  },
+  preCombatTitle: {
+    color: C.gold,
+    fontSize: 32,
+    fontWeight: 'bold',
+    letterSpacing: 2,
+  },
+  preCombatButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+  },
+  preCombatBtn: {
+    flex: 1,
+    backgroundColor: C.purple,
+    borderWidth: 2,
+    borderColor: C.gold,
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  preCombatBtnSecondary: {
+    backgroundColor: 'transparent',
+  },
+  preCombatBtnText: {
+    color: C.text,
+    fontSize: 14,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+
+  // Pre-combat level info
+  preCombatHeader: {
+    alignItems: 'center',
+    gap: 8,
+  },
+  preCombatLevelLabel: {
+    color: C.muted,
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+  },
+  preCombatChaosTag: {
+    backgroundColor: 'rgba(170,0,255,0.2)',
+    borderWidth: 1,
+    borderColor: '#AA00FF',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+  },
+  preCombatChaosText: {
+    color: '#CC66FF',
+    fontSize: 13,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+
+  // Chaos modifier badge in combat
+  chaosBadge: {
+    backgroundColor: 'rgba(170,0,255,0.18)',
+    borderWidth: 1,
+    borderColor: '#AA00FF',
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  chaosBadgeText: {
+    color: '#CC66FF',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+
+  // Bribe system
+  bribeGameBtn: {
+    backgroundColor: 'rgba(226,176,74,0.12)',
+    borderWidth: 1,
+    borderColor: C.gold,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bribeGameBtnText: {
+    fontSize: 18,
+  },
+  enragedBadge: {
+    backgroundColor: 'rgba(192,57,43,0.22)',
+    borderWidth: 1,
+    borderColor: C.red,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    alignSelf: 'flex-start',
+    marginTop: 4,
+  },
+  enragedBadgeText: {
+    color: C.red,
+    fontSize: 11,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  avatarWrap: {
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: 'transparent',
+    padding: 2,
+  },
+  avatarWrapEnraged: {
+    borderColor: C.red,
+    backgroundColor: 'rgba(192,57,43,0.18)',
+  },
+
+  // Run Complete screen
+  runCompleteContainer: {
+    backgroundColor: 'rgba(0,0,0,0.97)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 20,
+    paddingHorizontal: 30,
+  },
+  runCompleteTitle: {
+    color: C.gold,
+    fontSize: 38,
+    fontWeight: 'bold',
+    letterSpacing: 2,
+    textAlign: 'center',
+  },
+  runCompleteSubtitle: {
+    color: C.text,
+    fontSize: 16,
+    opacity: 0.7,
+    letterSpacing: 1,
+  },
+  runCompleteStats: {
+    alignItems: 'center',
+    gap: 10,
+    marginVertical: 10,
+  },
+  runCompleteStat: {
+    color: C.text,
+    fontSize: 16,
+    letterSpacing: 0.5,
+  },
+  runCompleteBtn: {
+    backgroundColor: C.purple,
+    borderWidth: 2,
+    borderColor: C.gold,
+    paddingHorizontal: 40,
+    paddingVertical: 16,
+    borderRadius: 12,
+    marginTop: 10,
+  },
+  runCompleteBtnText: {
+    color: C.text,
+    fontSize: 18,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+
+  // Multi-enemy
+  multiEnemyRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 4,
+    flexWrap: 'wrap',
+  },
+  multiEnemyCard: {
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 3,
+  },
+  multiEnemyCardSelected: {
+    // selection shown by 🎯 icon only
+  },
+  multiEnemyTargetIcon: {
+    fontSize: 12,
+    position: 'absolute',
+    top: 2,
+    right: 4,
+  },
+  multiEnemyHP: {
+    color: '#EFEFEF',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  multiEnemyShieldText: {
+    color: '#5BC8E8',
+    fontSize: 10,
+  },
+  multiEnemyIntention: {
+    fontSize: 14,
+    color: '#EFEFEF',
+    fontWeight: 'bold',
+  },
+
+  // Shrine locked toast
+  shrineLockedToast: {
+    position: 'absolute',
+    bottom: 90,
+    left: 16,
+    right: 16,
+    backgroundColor: 'rgba(15,52,96,0.95)',
+    borderWidth: 1.5,
+    borderColor: '#E2B04A',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    gap: 4,
+  },
+  shrineLockedText: {
+    color: '#E2B04A',
+    fontSize: 14,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+    textAlign: 'center',
+  },
+  shrineLockedSub: {
+    color: '#777',
+    fontSize: 12,
+    textAlign: 'center',
+  },
+});
+
+// ─── Active style set (refreshing the page switches between PC and mobile) ───
+const IS_PC = SCREEN_W >= 768;
+const s = IS_PC ? pcStyles : mobileStyles;
